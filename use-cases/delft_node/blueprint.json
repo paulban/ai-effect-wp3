@@ -1,0 +1,47 @@
+{
+  "name": "Synthetic Power Grid Pipeline",
+  "pipeline_id": "synth-powergrid-pipeline",
+  "creation_date": "2025-01-08",
+  "type": "pipeline-topology/v2",
+  "version": "1.0",
+  "nodes": [
+    {
+      "container_name": "grid_configurator",
+      "proto_uri": "synth_powergrid.proto",
+      "image": "synth-powergrid-adapter:latest",
+      "node_type": "DataSource",
+      "operation_signature_list": [
+        {
+          "operation_signature": {
+            "operation_name": "ConfigureGrid",
+            "output_message_name": "ConfigureGridResponse"
+          },
+          "connected_to": [
+            {
+              "container_name": "grid_synthesizer",
+              "operation_signature": {
+                "operation_name": "SynthesizeGrid"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "container_name": "grid_synthesizer",
+      "proto_uri": "synth_powergrid.proto",
+      "image": "synth-powergrid-adapter:latest",
+      "node_type": "DataSink",
+      "operation_signature_list": [
+        {
+          "operation_signature": {
+            "operation_name": "SynthesizeGrid",
+            "input_message_name": "SynthesizeGridRequest",
+            "output_message_name": "SynthesizeGridResponse"
+          },
+          "connected_to": []
+        }
+      ]
+    }
+  ]
+}

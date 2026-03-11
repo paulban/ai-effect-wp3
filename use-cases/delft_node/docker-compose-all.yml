@@ -1,0 +1,43 @@
+# TEF Services with AI-Effect Integration
+#
+# This docker-compose runs all TEF services with the AI-Effect control interface.
+# Requires the integrated-adapters and common modules to be copied to each service directory.
+#
+# Prerequisites:
+#   1. Copy common/ and integrated-adapters/ to this directory
+#   2. Modify each service's Dockerfile to copy the adapter files
+#   3. Modify each service's main.py to include the control router
+#
+# See RUNNING.md for detailed setup instructions.
+
+services:
+  synthetic-data:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tef-synthetic-data
+    ports:
+      - "8003:8080"
+    environment:
+      - ML_GRETEL_PORT=8080
+      - ML_GRETEL_RELOAD=False
+      - SELF_URL=http://synthetic-data:8080
+    volumes:
+      - synthetic_models:/app/models
+    networks:
+      - services
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  synthetic_models:
+    name: tef-synthetic-models
+
+networks:
+  services:
+    name: ai-effect-services
+    external: true

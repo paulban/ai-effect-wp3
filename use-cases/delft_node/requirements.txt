@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+pydantic
+httpx
+networkx
+numpy
+scipy
+pandas
+matplotlib
+# Install the synthesizer package directly from GitHub
+git+https://github.com/cookbook-ms/Chung_Lu_Chain-synthesizer.git
