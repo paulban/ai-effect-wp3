@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import importlib.util
+import inspect
 import json
 import logging
 import tempfile
@@ -136,34 +137,67 @@ def _compute_manual_kpis(episode_results: list[dict[str, Any]]) -> dict[str, Any
 
 
 def _evaluate_with_grid2evaluate(
+    record_directory: Path,
     episode_results: list[dict[str, Any]],
     context: dict[str, Any],
 ) -> dict[str, Any]:
-    """Compute KPIs via grid2evaluate when available.
+    """Compute KPIs via grid2evaluate from recorded EnvRecorder outputs.
 
-    The package API can vary between versions. This helper first tries known
-    entrypoints and falls back to manual KPI aggregation while preserving output
-    compatibility.
+    grid2evaluate expects a directory containing Grid2Op recorder parquet files.
+    We preserve existing manual KPI outputs and enrich them with grid2evaluate
+    metrics when possible.
     """
+    kpis = _compute_manual_kpis(episode_results)
+
     try:
-        import grid2evaluate  # type: ignore
+        from grid2evaluate.carbon_intensity_kpi import CarbonIntensityKpi  # type: ignore
+        from grid2evaluate.operation_score_kpi import OperationScoreKpi  # type: ignore
+        from grid2evaluate.topological_action_complexity_kpi import (  # type: ignore
+            TopologicalActionComplexityKpi,
+        )
 
-        if hasattr(grid2evaluate, "evaluate") and callable(grid2evaluate.evaluate):
-            return grid2evaluate.evaluate(
-                episode_results=episode_results, context=context
-            )
+        errors: dict[str, str] = {}
+        g2e_metrics: dict[str, Any] = {}
 
-        if hasattr(grid2evaluate, "evaluate_agent") and callable(
-            grid2evaluate.evaluate_agent
-        ):
-            return grid2evaluate.evaluate_agent(
-                episode_results=episode_results,
-                context=context,
+        try:
+            g2e_metrics["carbon_intensity"] = CarbonIntensityKpi().evaluate(
+                record_directory
             )
+        except Exception as exc:
+            errors["carbon_intensity"] = str(exc)
+
+        try:
+            g2e_metrics["operation_score"] = OperationScoreKpi().evaluate(
+                record_directory
+            )
+        except Exception as exc:
+            errors["operation_score"] = str(exc)
+
+        try:
+            g2e_metrics["topological_action_complexity"] = (
+                TopologicalActionComplexityKpi().evaluate(record_directory)
+            )
+        except Exception as exc:
+            errors["topological_action_complexity"] = str(exc)
+
+        if g2e_metrics:
+            kpis["grid2evaluate"] = g2e_metrics
+            kpis["evaluation_backend"] = (
+                "grid2evaluate" if not errors else "grid2evaluate_partial"
+            )
+            if errors:
+                kpis["grid2evaluate_errors"] = errors
+            return kpis
+
+        logger.warning(
+            "grid2evaluate KPIs unavailable for env=%s record_dir=%s context=%s",
+            context.get("env_name"),
+            record_directory,
+            context,
+        )
     except Exception as exc:
         logger.warning("grid2evaluate evaluation path failed: %s", exc)
 
-    kpis = _compute_manual_kpis(episode_results)
     kpis["evaluation_backend"] = "fallback_manual"
     return kpis
 
@@ -174,6 +208,7 @@ def _run_grid2op_episodes(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     import grid2op  # type: ignore
+    from grid2op.Environment.EnvRecorder import EnvRecorder  # type: ignore
 
     env = grid2op.make(config.env_name, test=True)
     build_agent = getattr(algorithm_module, REQUIRED_ALGORITHM_FUNCTION)
@@ -188,48 +223,87 @@ def _run_grid2op_episodes(
         },
     }
 
-    agent = build_agent(env, agent_context)
-    if not hasattr(agent, "act") or not callable(agent.act):
-        raise ValueError("Algorithm agent must expose callable method act(observation)")
+    with tempfile.TemporaryDirectory(prefix="benchmark_record_") as record_dir:
+        record_path = Path(record_dir)
 
-    episode_results: list[dict[str, Any]] = []
+        with EnvRecorder(env, record_path) as env_rec:
+            agent = build_agent(env_rec, agent_context)
+            if not hasattr(agent, "act") or not callable(agent.act):
+                raise ValueError(
+                    "Algorithm agent must expose callable method act(observation)"
+                )
 
-    for episode_idx in range(config.episodes):
-        obs = env.reset()
-        done = False
-        steps = 0
-        overload_violations = 0
-        started = time.perf_counter()
+            episode_results: list[dict[str, Any]] = []
 
-        while not done and steps < config.max_steps:
-            action = agent.act(obs)
-            obs, reward, done, info = env.step(action)
-            steps += 1
+            def _call_agent_act(observation: Any, reward: float, done: bool) -> Any:
+                """Call agent.act across different agent signatures.
 
-            # Grid2Op info contains backend-specific overload indicators.
-            if isinstance(info, dict):
-                if info.get("is_illegal", False):
-                    overload_violations += 1
-                elif info.get("is_ambiguous", False):
-                    overload_violations += 1
+                Some agents use act(obs), others use act(obs, reward) or
+                act(obs, reward, done).
+                """
+                act_fn = agent.act
+                try:
+                    param_count = len(inspect.signature(act_fn).parameters)
+                except (TypeError, ValueError):
+                    param_count = 1
 
-        runtime_seconds = time.perf_counter() - started
-        episode_results.append(
-            {
-                "episode_index": episode_idx,
-                "steps": steps,
-                "overload_violations": overload_violations,
-                "runtime_seconds": runtime_seconds,
-                "terminated": done,
-            }
-        )
+                if param_count <= 1:
+                    return act_fn(observation)
+                if param_count == 2:
+                    return act_fn(observation, reward)
+                return act_fn(observation, reward, done)
 
-    context = {
-        "env_name": config.env_name,
-        "episodes": config.episodes,
-        "max_steps": config.max_steps,
-    }
-    kpis = _evaluate_with_grid2evaluate(episode_results, context)
+            for episode_idx in range(config.episodes):
+                reset_result = env_rec.reset()
+                if isinstance(reset_result, tuple):
+                    obs = reset_result[0]
+                else:
+                    obs = reset_result
+
+                done = False
+                reward = 0.0
+                steps = 0
+                overload_violations = 0
+                started = time.perf_counter()
+
+                while not done and steps < config.max_steps:
+                    action = _call_agent_act(obs, reward, done)
+
+                    step_result = env_rec.step(action)
+                    if isinstance(step_result, tuple) and len(step_result) == 5:
+                        obs, reward, terminated, truncated, info = step_result
+                        done = bool(terminated or truncated)
+                    else:
+                        obs, reward, done, info = step_result
+
+                    steps += 1
+
+                    # Grid2Op info contains backend-specific overload indicators.
+                    if isinstance(info, dict):
+                        if info.get("is_illegal", False):
+                            overload_violations += 1
+                        elif info.get("is_ambiguous", False):
+                            overload_violations += 1
+
+                runtime_seconds = time.perf_counter() - started
+                episode_results.append(
+                    {
+                        "episode_index": episode_idx,
+                        "steps": steps,
+                        "overload_violations": overload_violations,
+                        "runtime_seconds": runtime_seconds,
+                        "terminated": done,
+                    }
+                )
+
+        context = {
+            "env_name": config.env_name,
+            "episodes": config.episodes,
+            "max_steps": config.max_steps,
+        }
+        kpis = _evaluate_with_grid2evaluate(record_path, episode_results, context)
+
+    env.close()
 
     return {
         "environment": {

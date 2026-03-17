@@ -18,6 +18,7 @@ This use case adds a benchmarking service for network topology optimization algo
 - main.py: service entrypoint
 - common/benchmark_operations.py: RunBenchmark operation implementation
 - algorithms/algorithm_template.py: user algorithm template
+- algorithms/greedy_baseline.py: baseline algorithm (RecoPowerlineAgent fallback)
 - blueprint.json and dockerinfo.json: orchestrator workflow metadata
 - run_workflow.sh: end-to-end orchestration run script
 
@@ -32,12 +33,20 @@ This use case adds a benchmarking service for network topology optimization algo
 2. Start this benchmark service
 3. Run ./run_workflow.sh
 
+## Local example smoke test with baseline algorithm
+1. Start the service locally (or in Docker)
+2. From this folder, run:
+  - python scripts/local_test_greedy.py --base-url http://localhost:8080
+3. The script submits an inline benchmark payload with algorithms/greedy_baseline.py,
+  then fetches KPI output from /control/data/{task_id}.
+
 ## Python package flow
 - Build package artifacts from this folder:
   - python -m pip install --upgrade build
   - python -m build
 - Run local CLI:
   - python benchmark_cli.py --algorithm algorithms/algorithm_template.py
+  - python benchmark_cli.py --algorithm algorithms/greedy_baseline.py
 
 ## Input payload shape (inline JSON)
 {

@@ -11,8 +11,8 @@ dependencies = [
   "fastapi==0.115.6",
   "uvicorn==0.32.1",
   "httpx==0.28.1",
-  "grid2op>=1.10.5",
-  "grid2evaluate>=0.1.0",
+  "grid2op @ git+https://github.com/Grid2op/grid2op.git@env_recorder",
+  "grid2evaluate @ git+https://github.com/AI4REALNET/grid2evaluate.git",
   "pandapower>=2.14.11",
   "numpy>=1.26.4"
 ]

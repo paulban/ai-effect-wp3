@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from .task_manager import get_task_manager
 
 logger = logging.getLogger(__name__)
-SELF_URL = os.environ.get("SELF_URL", "http://localhost:8080")
+SELF_URL = os.environ.get("SELF_URL", "http://localhost:8005")
 
 
 def get_data_url(task_id: str) -> str:
@@ -165,7 +165,7 @@ def run(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
     )
     host = os.environ.get("HOST", "0.0.0.0")
-    port = int(os.environ.get("PORT", "8080"))
+    port = int(os.environ.get("PORT", "8005"))
 
     logger.info("Starting %s on %s:%s", service_name, host, port)
     uvicorn.run(create_app(execute_handlers, service_name), host=host, port=port)

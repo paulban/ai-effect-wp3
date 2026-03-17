@@ -3,6 +3,11 @@
 
 set -e
 
+# Ensure jq is available (winget installs it as 'jqlang')
+if ! command -v jq &>/dev/null && command -v jqlang &>/dev/null; then
+    jq() { jqlang "$@"; }
+fi
+
 ORCHESTRATOR_URL="http://localhost:18000"
 SERVICE_URL="http://localhost:8004"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
