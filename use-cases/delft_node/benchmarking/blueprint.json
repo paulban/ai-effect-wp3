@@ -1,0 +1,27 @@
+{
+  "name": "Delft Grid2Op Benchmark",
+  "pipeline_id": "delft-grid2op-benchmark-001",
+  "creation_date": "2026-03-17",
+  "type": "pipeline-topology/v2",
+  "version": "2.0",
+  "nodes": [
+    {
+      "container_name": "benchmark-runner",
+      "proto_uri": "benchmark.proto",
+      "image": "delft-benchmark-runner:latest",
+      "node_type": "MLModel",
+      "operation_signature_list": [
+        {
+          "operation_signature": {
+            "operation_name": "RunBenchmark",
+            "input_message_name": "BenchmarkRequest",
+            "output_message_name": "BenchmarkResult",
+            "input_message_stream": false,
+            "output_message_stream": false
+          },
+          "connected_to": []
+        }
+      ]
+    }
+  ]
+}

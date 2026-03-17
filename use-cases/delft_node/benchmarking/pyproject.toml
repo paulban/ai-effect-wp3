@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "delft-grid-benchmark"
+version = "0.1.0"
+description = "Delft Node Grid2Op benchmarking use case"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi==0.115.6",
+  "uvicorn==0.32.1",
+  "httpx==0.28.1",
+  "grid2op>=1.10.5",
+  "grid2evaluate>=0.1.0",
+  "pandapower>=2.14.11",
+  "numpy>=1.26.4"
+]
+
+[project.scripts]
+delft-grid-benchmark = "benchmark_cli:main"
+
+[tool.setuptools]
+py-modules = ["main", "benchmark_cli"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["common*"]
