@@ -26,9 +26,29 @@ def main() -> None:
         help="Comma-separated time series ids for single-scenario mode",
     )
     parser.add_argument(
-        "--env-path",
+        "--topology-path",
         default=None,
-        help="Optional dataset path for single-scenario mode",
+        help="Optional topology file path for single-scenario mode",
+    )
+    parser.add_argument(
+        "--topology-format",
+        default="pandapower",
+        help="Topology source format for single-scenario mode",
+    )
+    parser.add_argument(
+        "--time-series-path",
+        default=None,
+        help="Optional time series source path for single-scenario mode",
+    )
+    parser.add_argument(
+        "--time-series-format",
+        default="grid2op_chronics_dir",
+        help="Time series source format for single-scenario mode",
+    )
+    parser.add_argument(
+        "--backend",
+        default=None,
+        help="Optional backend override for the scenario",
     )
     parser.add_argument(
         "--kpis",
@@ -42,16 +62,6 @@ def main() -> None:
     )
     parser.add_argument(
         "--max-steps", type=int, default=200, help="Max steps per episode"
-    )
-    parser.add_argument(
-        "--topology-json",
-        default="{}",
-        help="JSON string with pandapower-style topology metadata",
-    )
-    parser.add_argument(
-        "--timeseries-json",
-        default="{}",
-        help="JSON string with time series metadata",
     )
     args = parser.parse_args()
 
@@ -69,21 +79,38 @@ def main() -> None:
     if args.scenarios_json:
         benchmark_payload["scenarios"] = json.loads(args.scenarios_json)
     else:
-        benchmark_payload["env_name"] = args.env
-        benchmark_payload["episodes"] = args.episodes
+        scenario: dict[str, object] = {
+            "env_name": args.env,
+        }
+
         if args.time_series_ids:
-            benchmark_payload["time_series_ids"] = [
+            scenario["time_series_ids"] = [
                 int(part.strip())
                 for part in args.time_series_ids.split(",")
                 if part.strip()
             ]
-        if args.env_path:
-            benchmark_payload["env_path"] = args.env_path
+        else:
+            scenario["time_series_ids"] = list(range(args.episodes))
+
+        if args.topology_path:
+            scenario["topology"] = {
+                "format": args.topology_format,
+                "path": args.topology_path,
+            }
+
+        if args.time_series_path:
+            scenario["time_series"] = {
+                "format": args.time_series_format,
+                "path": args.time_series_path,
+            }
+
+        if args.backend:
+            scenario["backend"] = args.backend
+
+        benchmark_payload["scenarios"] = [scenario]
 
     payload = {
         "benchmark": benchmark_payload,
-        "grid_topology": json.loads(args.topology_json),
-        "time_series": json.loads(args.timeseries_json),
         "algorithm": {
             "source": algorithm_source,
         },

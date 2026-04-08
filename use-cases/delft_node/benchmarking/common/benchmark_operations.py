@@ -29,16 +29,29 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_ENV_NAME = "l2rpn_case14_sandbox"
 DEFAULT_MAX_STEPS = 200
-DEFAULT_EPISODES = 1
 
 REQUIRED_ALGORITHM_FUNCTION = "build_agent"
+
+
+@dataclass(frozen=True)
+class TopologySourceConfig:
+    format: str
+    path: str
+
+
+@dataclass(frozen=True)
+class TimeSeriesSourceConfig:
+    format: str
+    path: str
 
 
 @dataclass(frozen=True)
 class ScenarioConfig:
     env_name: str
     time_series_ids: tuple[int, ...] | None = None
-    env_path: str | None = None
+    topology: TopologySourceConfig | None = None
+    time_series: TimeSeriesSourceConfig | None = None
+    backend: str | None = None
 
 
 @dataclass(frozen=True)
@@ -81,22 +94,16 @@ def _parse_benchmark_config(payload: dict[str, Any]) -> BenchmarkConfig:
         scenarios = _parse_scenarios(raw_scenarios)
     else:
         env_name = str(benchmark_cfg.get("env_name", DEFAULT_ENV_NAME))
-        env_path = benchmark_cfg.get("env_path")
         raw_time_series_ids = benchmark_cfg.get("time_series_ids")
-
-        if raw_time_series_ids is not None:
-            time_series_ids = _parse_time_series_ids(raw_time_series_ids)
-        else:
-            episodes = int(benchmark_cfg.get("episodes", DEFAULT_EPISODES))
-            if episodes <= 0:
-                raise ValueError("benchmark.episodes must be > 0")
-            time_series_ids = tuple(range(episodes))
+        time_series_ids = _parse_time_series_ids(raw_time_series_ids) or (0,)
 
         scenarios = (
             ScenarioConfig(
                 env_name=env_name,
                 time_series_ids=time_series_ids,
-                env_path=str(env_path) if env_path else None,
+                topology=_parse_topology_source(benchmark_cfg.get("topology")),
+                time_series=_parse_time_series_source(benchmark_cfg.get("time_series")),
+                backend=_parse_backend(benchmark_cfg.get("backend")),
             ),
         )
 
@@ -158,15 +165,54 @@ def _parse_scenarios(raw_scenarios: Any) -> tuple[ScenarioConfig, ...]:
                 time_series_ids=_parse_time_series_ids(
                     raw_scenario.get("time_series_ids")
                 ),
-                env_path=(
-                    str(raw_scenario["env_path"])
-                    if raw_scenario.get("env_path")
-                    else None
-                ),
+                topology=_parse_topology_source(raw_scenario.get("topology")),
+                time_series=_parse_time_series_source(raw_scenario.get("time_series")),
+                backend=_parse_backend(raw_scenario.get("backend")),
             )
         )
 
     return tuple(scenarios)
+
+
+def _parse_topology_source(raw_topology: Any) -> TopologySourceConfig | None:
+    source = _parse_source_config(raw_topology, name="topology")
+    if source is None:
+        return None
+    return TopologySourceConfig(format=source["format"], path=source["path"])
+
+
+def _parse_time_series_source(raw_time_series: Any) -> TimeSeriesSourceConfig | None:
+    source = _parse_source_config(raw_time_series, name="time_series")
+    if source is None:
+        return None
+    return TimeSeriesSourceConfig(format=source["format"], path=source["path"])
+
+
+def _parse_source_config(raw_source: Any, name: str) -> dict[str, str] | None:
+    if raw_source is None:
+        return None
+    if not isinstance(raw_source, dict):
+        raise ValueError(f"{name} must be an object when provided")
+
+    fmt = raw_source.get("format")
+    path = raw_source.get("path")
+    if fmt is None and path is None:
+        return None
+    if not isinstance(fmt, str) or not fmt.strip():
+        raise ValueError(f"{name}.format must be a non-empty string")
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError(f"{name}.path must be a non-empty string")
+
+    return {"format": fmt.strip(), "path": path.strip()}
+
+
+def _parse_backend(raw_backend: Any) -> str | None:
+    if raw_backend is None:
+        return None
+    backend = str(raw_backend).strip()
+    if not backend:
+        raise ValueError("backend must be a non-empty string when provided")
+    return backend
 
 
 def _get_algorithm_source(payload: dict[str, Any]) -> str:
@@ -279,9 +325,7 @@ def _normalize_episode_results(raw_episodes: Any) -> list[dict[str, Any]]:
 
     normalized: list[dict[str, Any]] = []
     for index, episode in enumerate(raw_episodes):
-        episode_dict = (
-            _object_to_dict(episode) if not isinstance(episode, dict) else episode
-        )
+        episode_dict = _object_to_dict(episode)
         normalized.append(
             {
                 "episode_index": int(episode_dict.get("episode_index", index)),
@@ -306,7 +350,6 @@ def _normalize_episode_results(raw_episodes: Any) -> list[dict[str, Any]]:
 def _normalize_benchmark_result(
     raw_result: Any,
     config: BenchmarkConfig,
-    payload: dict[str, Any],
 ) -> dict[str, Any]:
     result_dict = _object_to_dict(raw_result)
     raw_scenarios = result_dict.get("scenarios", [])
@@ -370,9 +413,26 @@ def _normalize_benchmark_result(
 
     input_summary = result_dict.get("input_summary")
     if not isinstance(input_summary, dict):
+        first_scenario = config.scenarios[0] if config.scenarios else None
+        topology_payload = (
+            {
+                "format": first_scenario.topology.format,
+                "path": first_scenario.topology.path,
+            }
+            if first_scenario and first_scenario.topology
+            else {}
+        )
+        time_series_payload = (
+            {
+                "format": first_scenario.time_series.format,
+                "path": first_scenario.time_series.path,
+            }
+            if first_scenario and first_scenario.time_series
+            else {}
+        )
         input_summary = {
-            "topology_keys": sorted(payload.get("grid_topology", {}).keys()),
-            "time_series_keys": sorted(payload.get("time_series", {}).keys()),
+            "topology_keys": sorted(topology_payload.keys()),
+            "time_series_keys": sorted(time_series_payload.keys()),
         }
 
     normalized = {
@@ -401,11 +461,8 @@ def _normalize_benchmark_result(
 
 def _invoke_grid2benchmark(
     config: BenchmarkConfig,
-    algorithm_module: ModuleType,
     source_code: str,
-    payload: dict[str, Any],
 ) -> dict[str, Any]:
-    _ = (algorithm_module, payload)
     try:
         grid2benchmark = importlib.import_module("grid2benchmark")
     except Exception as exc:
@@ -416,6 +473,8 @@ def _invoke_grid2benchmark(
     run_benchmark = getattr(grid2benchmark, "run_benchmark", None)
     package_benchmark_config = getattr(grid2benchmark, "BenchmarkConfig", None)
     package_scenario_config = getattr(grid2benchmark, "ScenarioConfig", None)
+    package_topology_source = getattr(grid2benchmark, "TopologySource", None)
+    package_time_series_source = getattr(grid2benchmark, "TimeSeriesSource", None)
 
     if not callable(run_benchmark):
         raise RuntimeError("grid2benchmark.run_benchmark is not available")
@@ -424,14 +483,39 @@ def _invoke_grid2benchmark(
             "grid2benchmark.BenchmarkConfig and ScenarioConfig must be available"
         )
 
-    scenarios = tuple(
-        package_scenario_config(
-            env_name=scenario.env_name,
-            time_series_ids=scenario.time_series_ids,
-            env_path=scenario.env_path,
-        )
-        for scenario in config.scenarios
-    )
+    scenarios = []
+    for scenario in config.scenarios:
+        scenario_kwargs: dict[str, Any] = {
+            "env_name": scenario.env_name,
+            "time_series_ids": scenario.time_series_ids,
+        }
+
+        if scenario.topology is not None:
+            if not callable(package_topology_source):
+                raise RuntimeError(
+                    "grid2benchmark.TopologySource must be available when topology is provided"
+                )
+            scenario_kwargs["topology"] = package_topology_source(
+                format=scenario.topology.format,
+                path=Path(scenario.topology.path),
+            )
+
+        if scenario.time_series is not None:
+            if not callable(package_time_series_source):
+                raise RuntimeError(
+                    "grid2benchmark.TimeSeriesSource must be available when time_series is provided"
+                )
+            scenario_kwargs["time_series"] = package_time_series_source(
+                format=scenario.time_series.format,
+                path=Path(scenario.time_series.path),
+            )
+
+        if scenario.backend is not None:
+            scenario_kwargs["backend"] = scenario.backend
+
+        scenarios.append(package_scenario_config(**scenario_kwargs))
+
+    scenarios = tuple(scenarios)
 
     benchmark_config_kwargs: dict[str, Any] = {
         "scenarios": scenarios,
@@ -442,7 +526,7 @@ def _invoke_grid2benchmark(
 
     benchmark_config = package_benchmark_config(**benchmark_config_kwargs)
     result = run_benchmark(source_code, benchmark_config)
-    return _normalize_benchmark_result(result, config, payload)
+    return _normalize_benchmark_result(result, config)
 
 
 def execute_RunBenchmark(request: ExecuteRequest) -> ExecuteResponse:
@@ -458,7 +542,7 @@ def execute_RunBenchmark(request: ExecuteRequest) -> ExecuteResponse:
         module = _load_algorithm_module(source_code)
         _validate_algorithm_module(module)
 
-        benchmark_result = _invoke_grid2benchmark(config, module, source_code, payload)
+        benchmark_result = _invoke_grid2benchmark(config, source_code)
 
         result_json = json.dumps(benchmark_result, indent=2)
         get_task_manager().store_data(request.task_id, result_json, "json")

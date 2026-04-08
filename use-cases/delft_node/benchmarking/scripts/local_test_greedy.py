@@ -4,7 +4,7 @@ Usage:
     python scripts/local_test_greedy.py
 
 Optional:
-    python scripts/local_test_greedy.py --base-url http://localhost:8005
+    python scripts/local_test_greedy.py --base-url http://localhost:8004
 """
 
 from __future__ import annotations
@@ -24,16 +24,13 @@ def _build_payload(algorithm_path: Path) -> dict:
 
     return {
         "benchmark": {
-            "env_name": "l2rpn_case14_sandbox",
-            "episodes": 1,
             "max_steps": 50,
-        },
-        "grid_topology": {
-            "format": "pandapower",
-            "case": "case14",
-        },
-        "time_series": {
-            "profile": "default",
+            "scenarios": [
+                {
+                    "env_name": "l2rpn_case14_sandbox",
+                    "time_series_ids": [0],
+                }
+            ],
         },
         "algorithm": {
             "source_b64": source_b64,
@@ -45,7 +42,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run local benchmark smoke test with Grid2Op baseline algorithm"
     )
-    parser.add_argument("--base-url", default="http://localhost:8005")
+    parser.add_argument("--base-url", default="http://localhost:8004")
     parser.add_argument(
         "--algorithm",
         default="algorithms/greedy_baseline.py",
@@ -116,7 +113,7 @@ def main() -> None:
     except httpx.ConnectError as exc:
         raise SystemExit(
             f"Cannot connect to benchmark service at {args.base_url}. "
-            "Start it with: PORT=8005 python main.py "
+            "Start it with: PORT=8080 python main.py "
             "(or pass --base-url to a running endpoint)."
         ) from exc
 

@@ -30,13 +30,6 @@ INPUT_JSON=$(cat <<EOF
       }
     ]
   },
-  "grid_topology": {
-    "format": "pandapower",
-    "case": "case14"
-  },
-  "time_series": {
-    "profile": "default"
-  },
   "algorithm": {
     "source_b64": "$ALGO_B64"
   }

@@ -8,6 +8,8 @@ import common.benchmark_operations as benchmark_operations
 from common.benchmark_operations import (
     BenchmarkConfig,
     ScenarioConfig,
+    TimeSeriesSourceConfig,
+    TopologySourceConfig,
     _compute_manual_kpis,
     _decode_inline_json,
     _invoke_grid2benchmark,
@@ -46,7 +48,15 @@ def test_parse_benchmark_config_supports_explicit_scenarios_and_kpis():
                     {
                         "env_name": "env-a",
                         "time_series_ids": [2, 4],
-                        "env_path": "/tmp/env-a",
+                        "topology": {
+                            "format": "pandapower",
+                            "path": "/tmp/env-a.json",
+                        },
+                        "time_series": {
+                            "format": "grid2op_chronics_dir",
+                            "path": "/tmp/chronics-a",
+                        },
+                        "backend": "lightsim2grid",
                     },
                     {
                         "env_name": "env-b",
@@ -60,7 +70,13 @@ def test_parse_benchmark_config_supports_explicit_scenarios_and_kpis():
     assert cfg.kpis == ("survival", "latency")
     assert len(cfg.scenarios) == 2
     assert cfg.scenarios[0].time_series_ids == (2, 4)
-    assert cfg.scenarios[0].env_path == "/tmp/env-a"
+    assert cfg.scenarios[0].topology == TopologySourceConfig(
+        format="pandapower", path="/tmp/env-a.json"
+    )
+    assert cfg.scenarios[0].time_series == TimeSeriesSourceConfig(
+        format="grid2op_chronics_dir", path="/tmp/chronics-a"
+    )
+    assert cfg.scenarios[0].backend == "lightsim2grid"
     assert cfg.scenarios[1].time_series_ids is None
 
 
@@ -91,10 +107,19 @@ def test_normalize_benchmark_result_adds_fallback_fields():
         max_steps=5,
         scenarios=(ScenarioConfig(env_name="demo-env", time_series_ids=(0,)),),
     )
-    payload = {
-        "grid_topology": {"nodes": []},
-        "time_series": {"load": []},
-    }
+    config = BenchmarkConfig(
+        max_steps=5,
+        scenarios=(
+            ScenarioConfig(
+                env_name="demo-env",
+                time_series_ids=(0,),
+                topology=TopologySourceConfig(format="pandapower", path="./grid.json"),
+                time_series=TimeSeriesSourceConfig(
+                    format="grid2op_chronics_dir", path="./chronics"
+                ),
+            ),
+        ),
+    )
 
     result = _normalize_benchmark_result(
         {
@@ -115,7 +140,6 @@ def test_normalize_benchmark_result_adds_fallback_fields():
             "summary": {"scenario_count": 1, "episode_count": 1, "kpis": {}},
         },
         config,
-        payload,
     )
 
     assert result["environment"]["env_name"] == "demo-env"
@@ -123,7 +147,7 @@ def test_normalize_benchmark_result_adds_fallback_fields():
     assert result["episodes"][0]["runtime_seconds"] == 1.25
     assert result["episodes"][0]["scenario_index"] == 0
     assert result["kpis"]["evaluation_backend"] == "grid2benchmark_manual"
-    assert result["input_summary"]["topology_keys"] == ["nodes"]
+    assert result["input_summary"]["topology_keys"] == ["format", "path"]
     assert result["metadata"]["summary"]["scenario_count"] == 1
 
 
@@ -133,10 +157,29 @@ def test_invoke_grid2benchmark_calls_supported_function(
     fake_grid2benchmark = ModuleType("grid2benchmark")
 
     class FakeScenarioConfig:
-        def __init__(self, env_name, time_series_ids=None, env_path=None):
+        def __init__(
+            self,
+            env_name,
+            time_series_ids=None,
+            topology=None,
+            time_series=None,
+            backend=None,
+        ):
             self.env_name = env_name
             self.time_series_ids = time_series_ids
-            self.env_path = env_path
+            self.topology = topology
+            self.time_series = time_series
+            self.backend = backend
+
+    class FakeTopologySource:
+        def __init__(self, format, path):
+            self.format = format
+            self.path = path
+
+    class FakeTimeSeriesSource:
+        def __init__(self, format, path):
+            self.format = format
+            self.path = path
 
     class FakeBenchmarkConfig:
         def __init__(
@@ -177,6 +220,8 @@ def test_invoke_grid2benchmark_calls_supported_function(
 
     fake_grid2benchmark.BenchmarkConfig = FakeBenchmarkConfig
     fake_grid2benchmark.ScenarioConfig = FakeScenarioConfig
+    fake_grid2benchmark.TopologySource = FakeTopologySource
+    fake_grid2benchmark.TimeSeriesSource = FakeTimeSeriesSource
     fake_grid2benchmark.run_benchmark = run_benchmark
 
     def fake_import_module(name: str):
@@ -188,27 +233,25 @@ def test_invoke_grid2benchmark_calls_supported_function(
         benchmark_operations.importlib, "import_module", fake_import_module
     )
 
-    algorithm_module = ModuleType("submitted_algorithm")
-
-    class Agent:
-        def act(self, observation, reward=0.0, done=False):
-            _ = (observation, reward, done)
-            return "noop"
-
-    algorithm_module.build_agent = lambda env, context: Agent()
-
     result = _invoke_grid2benchmark(
         BenchmarkConfig(
             max_steps=7,
-            scenarios=(ScenarioConfig(env_name="demo-env", time_series_ids=(5, 9)),),
+            scenarios=(
+                ScenarioConfig(
+                    env_name="demo-env",
+                    time_series_ids=(5, 9),
+                    topology=TopologySourceConfig(
+                        format="pandapower", path="./grid.json"
+                    ),
+                    time_series=TimeSeriesSourceConfig(
+                        format="grid2op_chronics_dir", path="./chronics"
+                    ),
+                    backend="lightsim2grid",
+                ),
+            ),
             kpis=("survival", "latency"),
         ),
-        algorithm_module,
         "def build_agent(env, context): pass",
-        {
-            "grid_topology": {"nodes": []},
-            "time_series": {"load": []},
-        },
     )
 
     assert result["environment"]["env_name"] == "demo-env"
@@ -227,11 +270,6 @@ def test_invoke_grid2benchmark_requires_installed_package(
         benchmark_operations.importlib, "import_module", fake_import_module
     )
 
-    algorithm_module = ModuleType("submitted_algorithm")
-    algorithm_module.build_agent = lambda env, context: SimpleNamespace(
-        act=lambda obs: None
-    )
-
     with pytest.raises(RuntimeError, match="not installed or not importable"):
         _invoke_grid2benchmark(
             BenchmarkConfig(
@@ -240,7 +278,5 @@ def test_invoke_grid2benchmark_requires_installed_package(
                     ScenarioConfig(env_name="demo-env", time_series_ids=(0, 1)),
                 ),
             ),
-            algorithm_module,
             "source",
-            {},
         )

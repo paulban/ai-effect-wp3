@@ -48,17 +48,18 @@ This use case adds a benchmarking service for network topology optimization algo
   - python benchmark_cli.py --algorithm algorithms/algorithm_template.py
   - python benchmark_cli.py --algorithm algorithms/greedy_baseline.py
 
-## Input payload shape (inline JSON)
+## Canonical Input Payload (inline JSON)
 {
   "benchmark": {
-    "env_name": "l2rpn_case14_sandbox",
-    "episodes": 1,
     "max_steps": 100,
-    "time_series_ids": [0],
-    "kpis": ["survival", "latency"]
+    "kpis": ["survival", "latency"],
+    "scenarios": [
+      {
+        "env_name": "l2rpn_case14_sandbox",
+        "time_series_ids": [0]
+      }
+    ]
   },
-  "grid_topology": {"format": "pandapower", "case": "case14"},
-  "time_series": {"profile": "default"},
   "algorithm": {"source_b64": "<base64 python source>"}
 }
 
@@ -70,11 +71,19 @@ This use case adds a benchmarking service for network topology optimization algo
     "scenarios": [
       {
         "env_name": "l2rpn_case14_sandbox",
+        "topology": {
+          "format": "pandapower",
+          "path": "./data/grid.json"
+        },
+        "time_series": {
+          "format": "grid2op_chronics_dir",
+          "path": "./data/chronics"
+        },
         "time_series_ids": [0, 1, 2]
       },
       {
         "env_name": "l2rpn_case14_sandbox",
-        "env_path": "/datasets/custom-case",
+        "backend": "lightsim2grid",
         "time_series_ids": [7]
       }
     ]
@@ -86,14 +95,14 @@ This use case adds a benchmarking service for network topology optimization algo
 - The AI-Effect wrapper preserves the existing top-level fields: `environment`, `input_summary`, `episodes`, and `kpis`.
 - `grid2benchmark` native `summary` and per-scenario metadata are preserved under `metadata`.
 - If `benchmark.scenarios` is supplied, it is passed through directly to `grid2benchmark`.
-- In single-scenario mode, explicit `benchmark.time_series_ids` takes precedence over `benchmark.episodes`.
-- `benchmark.episodes` remains as a backward-compatible shorthand that maps to the first `N` time-series ids only when `time_series_ids` is not provided.
+- Scenario field names follow `grid2benchmark`: `env_name`, `time_series_ids`, `topology`, `time_series`, `backend`.
 
 ## Notes on dependencies
 - `requirements.txt` installs `grid2benchmark` from the public GitHub repository at branch `main`.
-- `requirements.txt` also installs `grid2evaluate` from GitHub because it is not currently published on PyPI.
+- `requirements.txt` also installs `grid2evaluate` and a specific version of `grid2op` from GitHub because it is not currently published on PyPI.
 - `pyproject.toml` references `grid2benchmark` directly for package metadata.
 
 ## Next extension
+- give test grid and time series data as files for benchmarking
 - CGMES input converter layer.
 - Strong isolation mode (subprocess or per-run container) for untrusted code.
