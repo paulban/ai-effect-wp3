@@ -21,9 +21,14 @@ ALGO_B64=$(echo -n "$ALGO_SOURCE" | base64 -w0 2>/dev/null || echo -n "$ALGO_SOU
 INPUT_JSON=$(cat <<EOF
 {
   "benchmark": {
-    "env_name": "l2rpn_case14_sandbox",
-    "episodes": 1,
-    "max_steps": 100
+    "max_steps": 100,
+    "kpis": ["survival", "violations", "latency"],
+    "scenarios": [
+      {
+        "env_name": "l2rpn_case14_sandbox",
+        "time_series_ids": [0]
+      }
+    ]
   },
   "grid_topology": {
     "format": "pandapower",

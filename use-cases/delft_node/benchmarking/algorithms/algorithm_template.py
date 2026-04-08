@@ -1,4 +1,4 @@
-"""L2RPN-style template for Delft benchmark algorithms.
+"""Template for Delft benchmark algorithms.
 
 Implement build_agent(env, context) and the agent act(observation) method.
 The benchmark runner imports this file dynamically.
@@ -22,7 +22,7 @@ def build_agent(env, context):
     """Return an agent instance with act(observation) -> action.
 
     Args:
-        env: Grid2Op environment.
+        env: Benchmark environment object.
         context: Dict with benchmark, grid_topology, and time_series inputs.
     """
     _ = context

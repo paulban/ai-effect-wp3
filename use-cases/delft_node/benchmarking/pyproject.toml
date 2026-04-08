@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "delft-grid-benchmark"
 version = "0.1.0"
-description = "Delft Node Grid2Op benchmarking use case"
+description = "Delft Node Grid2Benchmark benchmarking use case"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi==0.115.6",
   "uvicorn==0.32.1",
   "httpx==0.28.1",
-  "grid2op @ git+https://github.com/Grid2op/grid2op.git@env_recorder",
   "grid2evaluate @ git+https://github.com/AI4REALNET/grid2evaluate.git",
+  "grid2benchmark @ git+https://github.com/paulban/grid2benchmark.git@main",
   "pandapower>=2.14.11",
   "numpy>=1.26.4"
 ]

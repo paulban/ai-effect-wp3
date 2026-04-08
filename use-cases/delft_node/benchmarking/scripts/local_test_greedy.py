@@ -13,6 +13,7 @@ import argparse
 import base64
 import json
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
@@ -89,9 +90,29 @@ def main() -> None:
             if not output_ref:
                 raise RuntimeError("Benchmark returned no output reference")
 
-            output = client.get(output_ref["uri"])
-            output.raise_for_status()
-            result = output.json()
+            output_uri = output_ref["uri"]
+            try:
+                output = client.get(output_uri)
+                output.raise_for_status()
+                result = output.json()
+            except httpx.ConnectError:
+                # When running from host against Docker, services may return
+                # container-internal URLs (e.g., http://benchmark-runner:8080/...)
+                parsed = urlparse(output_uri)
+                if not parsed.path:
+                    raise
+
+                fallback_uri = parsed.path
+                if parsed.query:
+                    fallback_uri = f"{fallback_uri}?{parsed.query}"
+
+                print(
+                    "Output URI is not directly reachable from host; "
+                    f"retrying via base URL path: {fallback_uri}"
+                )
+                output = client.get(fallback_uri)
+                output.raise_for_status()
+                result = output.json()
     except httpx.ConnectError as exc:
         raise SystemExit(
             f"Cannot connect to benchmark service at {args.base_url}. "

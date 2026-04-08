@@ -1,45 +1,38 @@
-"""Grid2Op baseline algorithm for local benchmark tests.
+"""Generic baseline algorithm for local benchmark tests.
 
-This baseline tries a built-in Grid2Op heuristic agent first, and falls back
-on DoNothingAgent if the preferred heuristic is unavailable.
+This baseline intentionally emits a no-op style action and works with
+environments exposing either action_space() or action_space.sample().
 """
 
 from __future__ import annotations
 
 
 class BaselineWrapper:
-    def __init__(self, env):
-        self._agent = None
-        self._init_agent(env)
+    def __init__(self, action_space):
+        self._action_space = action_space
 
-    def _init_agent(self, env) -> None:
+    def _default_action(self):
+        action_space = self._action_space
+        if action_space is None:
+            raise RuntimeError("Environment does not expose an action space")
+
+        if callable(action_space):
+            return action_space()
+
+        sample = getattr(action_space, "sample", None)
+        if callable(sample):
+            return sample()
+
         try:
-            from grid2op.Agent import RecoPowerlineAgent
-
-            self._agent = RecoPowerlineAgent(env.action_space)
-            return
-        except Exception:
-            pass
-
-        try:
-            from grid2op.Agent import DoNothingAgent
-
-            self._agent = DoNothingAgent(env.action_space)
-            return
+            return action_space.get_do_nothing_action()
         except Exception as exc:
-            raise RuntimeError("Unable to create a Grid2Op baseline agent.") from exc
+            raise RuntimeError("Unable to infer a default action") from exc
 
     def act(self, observation, reward=0.0, done=False):
-        # Keep compatibility with multiple Grid2Op agent signatures.
-        try:
-            return self._agent.act(observation, reward, done)
-        except TypeError:
-            try:
-                return self._agent.act(observation, reward)
-            except TypeError:
-                return self._agent.act(observation)
+        _ = (observation, reward, done)
+        return self._default_action()
 
 
 def build_agent(env, context):
     _ = context
-    return BaselineWrapper(env)
+    return BaselineWrapper(getattr(env, "action_space", None))

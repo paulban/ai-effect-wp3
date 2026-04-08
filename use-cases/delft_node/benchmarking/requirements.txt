@@ -1,8 +1,9 @@
 fastapi==0.115.6
 uvicorn==0.32.1
 httpx==0.28.1
-git+https://github.com/Grid2op/grid2op.git@env_recorder
-git+https://github.com/AI4REALNET/grid2evaluate.git
+grid2evaluate @ git+https://github.com/AI4REALNET/grid2evaluate.git
+grid2benchmark @ git+https://github.com/paulban/grid2benchmark.git@main
+grid2op @ git+https://github.com/Grid2op/grid2op.git@env_recorder
 pandapower>=2.14.11
 numpy>=1.26.4
 pytest>=8.3.4

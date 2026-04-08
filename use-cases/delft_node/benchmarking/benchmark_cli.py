@@ -12,12 +12,34 @@ from common.control_interface import ExecuteRequest
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run Delft Grid2Op benchmark locally")
+    parser = argparse.ArgumentParser(
+        description="Run Delft Grid2Benchmark benchmark locally"
+    )
     parser.add_argument("--algorithm", required=True, help="Path to algorithm .py file")
     parser.add_argument(
-        "--env", default="l2rpn_case14_sandbox", help="Grid2Op env name"
+        "--env", default="l2rpn_case14_sandbox", help="Benchmark environment name"
     )
     parser.add_argument("--episodes", type=int, default=1, help="Number of episodes")
+    parser.add_argument(
+        "--time-series-ids",
+        default=None,
+        help="Comma-separated time series ids for single-scenario mode",
+    )
+    parser.add_argument(
+        "--env-path",
+        default=None,
+        help="Optional dataset path for single-scenario mode",
+    )
+    parser.add_argument(
+        "--kpis",
+        default=None,
+        help="Comma-separated KPI names to request from grid2benchmark",
+    )
+    parser.add_argument(
+        "--scenarios-json",
+        default=None,
+        help="JSON array of scenario objects; overrides --env/--episodes/--time-series-ids",
+    )
     parser.add_argument(
         "--max-steps", type=int, default=200, help="Max steps per episode"
     )
@@ -35,12 +57,31 @@ def main() -> None:
 
     algorithm_source = Path(args.algorithm).read_text(encoding="utf-8")
 
+    benchmark_payload = {
+        "max_steps": args.max_steps,
+    }
+
+    if args.kpis:
+        benchmark_payload["kpis"] = [
+            part.strip() for part in args.kpis.split(",") if part.strip()
+        ]
+
+    if args.scenarios_json:
+        benchmark_payload["scenarios"] = json.loads(args.scenarios_json)
+    else:
+        benchmark_payload["env_name"] = args.env
+        benchmark_payload["episodes"] = args.episodes
+        if args.time_series_ids:
+            benchmark_payload["time_series_ids"] = [
+                int(part.strip())
+                for part in args.time_series_ids.split(",")
+                if part.strip()
+            ]
+        if args.env_path:
+            benchmark_payload["env_path"] = args.env_path
+
     payload = {
-        "benchmark": {
-            "env_name": args.env,
-            "episodes": args.episodes,
-            "max_steps": args.max_steps,
-        },
+        "benchmark": benchmark_payload,
         "grid_topology": json.loads(args.topology_json),
         "time_series": json.loads(args.timeseries_json),
         "algorithm": {
