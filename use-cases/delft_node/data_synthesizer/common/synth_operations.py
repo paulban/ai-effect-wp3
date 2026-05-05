@@ -24,7 +24,12 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
+import threading
+from concurrent import futures
+from typing import Any
 
+import grpc
 import matplotlib
 
 matplotlib.use("Agg")
@@ -32,13 +37,13 @@ matplotlib.use("Agg")
 import networkx as nx
 from networkx.readwrite import json_graph
 
-from powergrid_synth.generator import PowerGridGenerator
-from powergrid_synth.input_configurator import InputConfigurator
-from powergrid_synth.bus_type_allocator import BusTypeAllocator
-from powergrid_synth.capacity_allocator import CapacityAllocator
-from powergrid_synth.load_allocator import LoadAllocator
-from powergrid_synth.generation_dispatcher import GenerationDispatcher
-from powergrid_synth.transmission import TransmissionLineAllocator
+from powergrid_synth.transmission.generator import PowerGridGenerator
+from powergrid_synth.transmission.input_configurator import InputConfigurator
+from powergrid_synth.transmission.bus_type_allocator import BusTypeAllocator
+from powergrid_synth.transmission.capacity_allocator import CapacityAllocator
+from powergrid_synth.transmission.load_allocator import LoadAllocator
+from powergrid_synth.transmission.generation_dispatcher import GenerationDispatcher
+from powergrid_synth.transmission.transmission import TransmissionLineAllocator
 
 from .control_interface import (
     DataReference,
@@ -46,9 +51,19 @@ from .control_interface import (
     ExecuteResponse,
     get_data_url,
 )
+from .proto_runtime import ensure_generated
 from .task_manager import get_task_manager
 
 logger = logging.getLogger(__name__)
+
+ensure_generated("common.proto", "data_synthesizer.proto")
+import common_pb2  # type: ignore  # noqa: E402
+import data_synthesizer_pb2  # type: ignore  # noqa: E402
+import data_synthesizer_pb2_grpc  # type: ignore  # noqa: E402
+
+_cache_lock = threading.Lock()
+_cached_config_response: data_synthesizer_pb2.GetGridConfigResponse | None = None
+_cached_grid_response: data_synthesizer_pb2.GetGridDataResponse | None = None
 
 # Default grid configuration
 DEFAULT_LEVEL_SPECS = [
@@ -65,6 +80,60 @@ DEFAULT_CONNECTION_SPECS = {
 DEFAULT_SEED = 42
 DEFAULT_LOADING_LEVEL = "M"
 DEFAULT_REF_SYS_ID = 1
+
+_LOADING_LEVEL_TO_PROTO = {
+    "L": common_pb2.LOADING_LEVEL_LOW,
+    "M": common_pb2.LOADING_LEVEL_MEDIUM,
+    "H": common_pb2.LOADING_LEVEL_HIGH,
+}
+
+_LOADING_LEVEL_FROM_PROTO = {
+    common_pb2.LOADING_LEVEL_LOW: "L",
+    common_pb2.LOADING_LEVEL_MEDIUM: "M",
+    common_pb2.LOADING_LEVEL_HIGH: "H",
+}
+
+
+class DataSynthesizerServicer(data_synthesizer_pb2_grpc.DataSynthesizerServiceServicer):
+    """gRPC servicer exposing synthesized config and grid artifacts."""
+
+    def GetGridConfig(self, request, context):
+        with _cache_lock:
+            if _cached_config_response is None:
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                context.set_details("No grid configuration available")
+                return data_synthesizer_pb2.GetGridConfigResponse(
+                    success=False,
+                    message="No grid configuration available",
+                )
+            return _cached_config_response
+
+    def GetGridData(self, request, context):
+        with _cache_lock:
+            if _cached_grid_response is None:
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                context.set_details("No synthesized grid available")
+                return data_synthesizer_pb2.GetGridDataResponse(
+                    success=False,
+                    message="No synthesized grid available",
+                )
+            return _cached_grid_response
+
+    def GetSynthesizedGrid(self, request, context):
+        return self.GetGridData(request, context)
+
+
+def start_grpc_server():
+    """Start the synthesizer gRPC data plane server in background."""
+    grpc_port = os.environ.get("GRPC_PORT", "50051")
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    data_synthesizer_pb2_grpc.add_DataSynthesizerServiceServicer_to_server(
+        DataSynthesizerServicer(), server
+    )
+    server.add_insecure_port(f"[::]:{grpc_port}")
+    server.start()
+    logger.info(f"Data synthesizer gRPC server started on port {grpc_port}")
+    return server
 
 
 def _decode_inline_input(input_ref: dict) -> dict:
@@ -116,6 +185,192 @@ def fetch_http_data(uri: str, timeout: float = 60.0) -> str:
     return resp.text
 
 
+def _fetch_grid_config_from_upstream(
+    grpc_uri: str,
+) -> data_synthesizer_pb2.GetGridConfigResponse:
+    """Fetch synthesized configuration using gRPC from upstream service."""
+    logger.info(f"Fetching grid config via gRPC from {grpc_uri}")
+    channel = grpc.insecure_channel(grpc_uri)
+    stub = data_synthesizer_pb2_grpc.DataSynthesizerServiceStub(channel)
+    try:
+        return stub.GetGridConfig(data_synthesizer_pb2.GetGridConfigRequest())
+    finally:
+        channel.close()
+
+
+def _coerce_int_list(values: Any) -> list[int]:
+    if values is None:
+        return []
+    if isinstance(values, (list, tuple)):
+        return [int(v) for v in values]
+    return [int(values)]
+
+
+def _parse_connection_key(key: Any) -> tuple[int, int]:
+    if isinstance(key, str) and key.startswith("("):
+        nums = key.strip("()").split(",")
+        return int(nums[0].strip()), int(nums[1].strip())
+    if isinstance(key, (list, tuple)) and len(key) == 2:
+        return int(key[0]), int(key[1])
+    parts = str(key).replace("_", "-").split("-")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid connection key: {key}")
+    return int(parts[0]), int(parts[1])
+
+
+def _loading_level_to_proto(value: str) -> int:
+    return _LOADING_LEVEL_TO_PROTO.get(
+        str(value).upper(), common_pb2.LOADING_LEVEL_MEDIUM
+    )
+
+
+def _loading_level_from_proto(value: int) -> str:
+    return _LOADING_LEVEL_FROM_PROTO.get(value, DEFAULT_LOADING_LEVEL)
+
+
+def _grid_config_to_proto(
+    config_output: dict[str, Any],
+) -> common_pb2.GridSynthesisConfig:
+    """Convert generated synthesis config payload to protobuf GridSynthesisConfig."""
+    config_msg = common_pb2.GridSynthesisConfig(
+        seed=int(config_output.get("seed", DEFAULT_SEED)),
+        loading_level=_loading_level_to_proto(
+            str(config_output.get("loading_level", DEFAULT_LOADING_LEVEL))
+        ),
+        ref_sys_id=int(config_output.get("ref_sys_id", DEFAULT_REF_SYS_ID)),
+    )
+
+    for key, value in config_output.get("connection_specs", {}).items():
+        from_level, to_level = _parse_connection_key(key)
+        config_msg.connections.add(
+            from_level=from_level,
+            to_level=to_level,
+            type=str(value.get("type", "")),
+            c=float(value.get("c", 0.0)),
+            gamma=float(value.get("gamma", 0.0)),
+        )
+
+    for degree_values in config_output.get("degrees_by_level", []):
+        config_msg.degrees_by_level.add(values=_coerce_int_list(degree_values))
+
+    for d in config_output.get("diameters_by_level", []):
+        config_msg.diameters_by_level.append(int(d))
+
+    for key, values in config_output.get("transformer_degrees", {}).items():
+        from_level, to_level = _parse_connection_key(key)
+        if not isinstance(values, (list, tuple)) or len(values) != 2:
+            raise ValueError(
+                f"transformer_degrees[{key}] must contain exactly two degree vectors"
+            )
+        source_degrees = _coerce_int_list(values[0])
+        target_degrees = _coerce_int_list(values[1])
+        config_msg.transformer_degrees.add(
+            from_level=from_level,
+            to_level=to_level,
+            source_degrees=source_degrees,
+            target_degrees=target_degrees,
+        )
+
+    return config_msg
+
+
+def _proto_grid_config_to_dict(
+    config_msg: common_pb2.GridSynthesisConfig,
+) -> dict[str, Any]:
+    """Convert protobuf GridSynthesisConfig to dictionary used by synthesis logic."""
+    transformer_degrees: dict[str, Any] = {
+        str((pair.from_level, pair.to_level)): [
+            list(pair.source_degrees),
+            list(pair.target_degrees),
+        ]
+        for pair in config_msg.transformer_degrees
+    }
+
+    connection_specs: dict[str, dict[str, Any]] = {}
+    for conn in config_msg.connections:
+        connection_specs[str((conn.from_level, conn.to_level))] = {
+            "type": str(conn.type),
+            "c": float(conn.c),
+            "gamma": float(conn.gamma),
+        }
+
+    return {
+        "seed": int(config_msg.seed),
+        "loading_level": _loading_level_from_proto(config_msg.loading_level),
+        "ref_sys_id": int(config_msg.ref_sys_id),
+        "connection_specs": connection_specs,
+        "degrees_by_level": [
+            [int(v) for v in seq.values] for seq in config_msg.degrees_by_level
+        ],
+        "diameters_by_level": list(config_msg.diameters_by_level),
+        "transformer_degrees": transformer_degrees,
+    }
+
+
+def _grid_data_to_proto(
+    output: dict[str, Any],
+    config_output: dict[str, Any],
+) -> common_pb2.GridData:
+    """Map node-link JSON payload to protobuf GridData."""
+    graph_data = output.get("graph_data", {})
+    topology = common_pb2.GridTopology(
+        directed=bool(graph_data.get("directed", False)),
+        multigraph=bool(graph_data.get("multigraph", False)),
+    )
+
+    for node in graph_data.get("nodes", []):
+        node_msg = topology.nodes.add(
+            id=str(node.get("id", "")),
+            bus_type=str(node.get("bus_type", "")),
+            voltage=float(node.get("v_nom", node.get("voltage", 0.0)) or 0.0),
+            load_p=float(node.get("p_load", 0.0) or 0.0),
+            load_q=float(node.get("q_load", 0.0) or 0.0),
+            gen_p=float(node.get("p_set", 0.0) or 0.0),
+            gen_q=float(node.get("q_set", 0.0) or 0.0),
+        )
+        for key, value in node.items():
+            if key not in {
+                "id",
+                "bus_type",
+                "v_nom",
+                "voltage",
+                "p_load",
+                "q_load",
+                "p_set",
+                "q_set",
+            }:
+                node_msg.metadata[str(key)] = str(value)
+
+    for edge in graph_data.get("links", []):
+        edge_msg = topology.edges.add(
+            source=str(edge.get("source", "")),
+            target=str(edge.get("target", "")),
+            resistance=float(edge.get("r", 0.0) or 0.0),
+            reactance=float(edge.get("x", 0.0) or 0.0),
+            susceptance=float(edge.get("b", 0.0) or 0.0),
+            thermal_limit=float(
+                edge.get("snom", edge.get("thermal_limit", 0.0)) or 0.0
+            ),
+        )
+        for key, value in edge.items():
+            if key not in {"source", "target", "r", "x", "b", "snom", "thermal_limit"}:
+                edge_msg.metadata[str(key)] = str(value)
+
+    grid_data = common_pb2.GridData(
+        grid_id="delft-synthesized-grid",
+        topology=topology,
+        seed=int(output.get("seed", DEFAULT_SEED)),
+        loading_level=str(output.get("loading_level", DEFAULT_LOADING_LEVEL)),
+        ref_sys_id=int(output.get("ref_sys_id", DEFAULT_REF_SYS_ID)),
+        source_config=_grid_config_to_proto(config_output),
+    )
+
+    grid_data.metadata["status"] = str(output.get("status", "success"))
+    grid_data.metadata["nodes"] = str(output.get("nodes", 0))
+    grid_data.metadata["edges"] = str(output.get("edges", 0))
+    return grid_data
+
+
 # =============================================================================
 # ConfigureGrid Handler
 # =============================================================================
@@ -142,6 +397,8 @@ def execute_ConfigureGrid(request: ExecuteRequest) -> ExecuteResponse:
     Returns:
         DataReference with HTTP URL to JSON configuration.
     """
+    global _cached_config_response
+
     # Parse input parameters or use defaults
     params = {}
     if request.inputs:
@@ -168,6 +425,14 @@ def execute_ConfigureGrid(request: ExecuteRequest) -> ExecuteResponse:
             "loading_level": loading_level,
             "ref_sys_id": ref_sys_id,
             "level_specs": level_specs,
+            "connection_specs": {
+                str(k): {
+                    "type": str(v.get("type", "")),
+                    "c": float(v.get("c", 0.0)),
+                    "gamma": float(v.get("gamma", 0.0)),
+                }
+                for k, v in connection_specs.items()
+            },
             "degrees_by_level": [
                 arr.tolist() if hasattr(arr, "tolist") else list(arr)
                 for arr in config_params["degrees_by_level"]
@@ -187,19 +452,29 @@ def execute_ConfigureGrid(request: ExecuteRequest) -> ExecuteResponse:
         # Store for HTTP serving
         get_task_manager().store_data(request.task_id, config_json, "json")
 
+        with _cache_lock:
+            _cached_config_response = data_synthesizer_pb2.GetGridConfigResponse(
+                success=True,
+                message="Grid configuration generated",
+                config=_grid_config_to_proto(config_output),
+            )
+
         logger.info(f"Grid configuration complete: {len(level_specs)} levels")
+
+        grpc_host = os.environ.get("GRPC_HOST", "synthetic-data")
+        grpc_port = os.environ.get("GRPC_PORT", "50051")
 
         return ExecuteResponse(
             status="complete",
             output=DataReference(
-                protocol="http",
-                uri=get_data_url(request.task_id),
-                format="json",
+                protocol="grpc",
+                uri=f"{grpc_host}:{grpc_port}",
+                format="GetGridConfig",
             ),
         )
 
     except Exception as e:
-        logger.error(f"ConfigureGrid failed: {e}")
+        logger.exception("ConfigureGrid failed")
         return ExecuteResponse(status="failed", error=str(e))
 
 
@@ -225,6 +500,8 @@ def execute_SynthesizeGrid(request: ExecuteRequest) -> ExecuteResponse:
     Returns:
         DataReference with HTTP URL to JSON graph data (node-link format).
     """
+    global _cached_grid_response
+
     if not request.inputs:
         return ExecuteResponse(status="failed", error="No input configuration provided")
 
@@ -233,7 +510,21 @@ def execute_SynthesizeGrid(request: ExecuteRequest) -> ExecuteResponse:
     try:
         # Fetch configuration from upstream
         protocol = input_ref.get("protocol", "")
-        if protocol in ("http", "https"):
+        if protocol == "grpc":
+            upstream_uri = input_ref.get("uri", "")
+            if not upstream_uri:
+                return ExecuteResponse(
+                    status="failed",
+                    error="Missing grpc uri for SynthesizeGrid input",
+                )
+            config_response = _fetch_grid_config_from_upstream(upstream_uri)
+            if not config_response.success:
+                return ExecuteResponse(
+                    status="failed",
+                    error=f"Upstream gRPC config fetch failed: {config_response.message}",
+                )
+            config = _proto_grid_config_to_dict(config_response.config)
+        elif protocol in ("http", "https"):
             config_json = fetch_http_data(input_ref["uri"])
             config = json.loads(config_json)
         elif protocol == "inline":
@@ -241,7 +532,10 @@ def execute_SynthesizeGrid(request: ExecuteRequest) -> ExecuteResponse:
         else:
             return ExecuteResponse(
                 status="failed",
-                error=f"Unsupported protocol: {protocol}. Expected 'http' or 'inline'.",
+                error=(
+                    f"Unsupported protocol: {protocol}. "
+                    "Expected 'grpc', 'http', 'https', or 'inline'."
+                ),
             )
 
         seed = config.get("seed", DEFAULT_SEED)
@@ -306,17 +600,27 @@ def execute_SynthesizeGrid(request: ExecuteRequest) -> ExecuteResponse:
         # Store for HTTP serving
         get_task_manager().store_data(request.task_id, output_json, "json")
 
+        with _cache_lock:
+            _cached_grid_response = data_synthesizer_pb2.GetGridDataResponse(
+                success=True,
+                message="Synthesized grid available",
+                grid_data=_grid_data_to_proto(output, config),
+            )
+
         logger.info(
             f"Grid synthesis complete: {grid.number_of_nodes()} nodes, "
             f"{grid.number_of_edges()} edges"
         )
 
+        grpc_host = os.environ.get("GRPC_HOST", "synthetic-data")
+        grpc_port = os.environ.get("GRPC_PORT", "50051")
+
         return ExecuteResponse(
             status="complete",
             output=DataReference(
-                protocol="http",
-                uri=get_data_url(request.task_id),
-                format="json",
+                protocol="grpc",
+                uri=f"{grpc_host}:{grpc_port}",
+                format="GetGridData",
             ),
         )
 

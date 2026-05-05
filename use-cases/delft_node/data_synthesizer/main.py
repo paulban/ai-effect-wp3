@@ -14,7 +14,8 @@ Endpoints:
     GET  /health              - Health check
 """
 
-from common import synth_handlers, run
+from common import run, start_grpc_server, synth_handlers
 
 if __name__ == "__main__":
+    grpc_server = start_grpc_server()
     run(synth_handlers, "Synthetic Power Grid")

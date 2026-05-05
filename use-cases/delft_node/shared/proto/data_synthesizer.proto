@@ -1,0 +1,26 @@
+syntax = "proto3";
+package delft.data_synthesizer;
+
+import "common.proto";
+
+message GetGridConfigRequest {}
+
+message GetGridConfigResponse {
+  bool success = 1;
+  string message = 2;
+  delft.common.GridSynthesisConfig config = 3;
+}
+
+message GetGridDataRequest {}
+
+message GetGridDataResponse {
+  bool success = 1;
+  string message = 2;
+  delft.common.GridData grid_data = 3;
+}
+
+service DataSynthesizerService {
+  rpc GetGridConfig(GetGridConfigRequest) returns (GetGridConfigResponse);
+  rpc GetGridData(GetGridDataRequest) returns (GetGridDataResponse);
+  rpc GetSynthesizedGrid(GetGridDataRequest) returns (GetGridDataResponse);
+}

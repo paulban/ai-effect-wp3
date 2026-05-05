@@ -1,6 +1,16 @@
 {
   "docker_info_list": [
     {
+      "container_name": "grid_configurator",
+      "ip_address": "host.docker.internal",
+      "port": "8003"
+    },
+    {
+      "container_name": "grid_synthesizer",
+      "ip_address": "host.docker.internal",
+      "port": "8003"
+    },
+    {
       "container_name": "benchmark-runner",
       "ip_address": "host.docker.internal",
       "port": "8004"

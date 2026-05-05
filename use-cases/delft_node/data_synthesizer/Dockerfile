@@ -1,33 +1,28 @@
-# Use official, lightweight Python image
 FROM python:3.10-slim
 
-# Set the working directory inside the container
 WORKDIR /app
 
-# Install git (required to pip install from a GitHub repo)
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file into the container
-COPY requirements.txt .
-
-# Install dependencies (no-cache-dir keeps the image size small)
+COPY data_synthesizer/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code into the container
-COPY common/ ./common/
-COPY main.py .
+COPY shared/proto ./shared/proto
+COPY data_synthesizer/common ./common
+COPY data_synthesizer/main.py ./main.py
+COPY data_synthesizer/blueprint.json ./blueprint.json
+COPY data_synthesizer/dockerinfo.json ./dockerinfo.json
 
-# Configuration files (for orchestrator reference)
-COPY blueprint.json .
-COPY dockerinfo.json .
+RUN mkdir -p ./common/_generated && \
+	python -m grpc_tools.protoc -I./shared/proto --python_out=./common/_generated --grpc_python_out=./common/_generated ./shared/proto/common.proto ./shared/proto/data_synthesizer.proto
 
-# Environment variables for the AI-Effect control interface
-ENV SELF_URL=http://localhost:8080
+ENV SELF_URL=http://synthetic-data:8080
 ENV HOST=0.0.0.0
 ENV PORT=8080
+ENV GRPC_HOST=synthetic-data
+ENV GRPC_PORT=50051
 
-# Expose the port the API will run on
 EXPOSE 8080
+EXPOSE 50051
 
-# Command to run the service
 CMD ["python", "main.py"]

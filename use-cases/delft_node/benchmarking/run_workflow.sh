@@ -9,6 +9,7 @@ if ! command -v jq &>/dev/null && command -v jqlang &>/dev/null; then
 fi
 
 ORCHESTRATOR_URL="http://localhost:18000"
+SYNTH_SERVICE_URL="http://localhost:8003"
 SERVICE_URL="http://localhost:8004"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 POLL_INTERVAL=3
@@ -20,6 +21,8 @@ ALGO_B64=$(echo -n "$ALGO_SOURCE" | base64 -w0 2>/dev/null || echo -n "$ALGO_SOU
 
 INPUT_JSON=$(cat <<EOF
 {
+  "seed": 42,
+  "loading_level": "M",
   "benchmark": {
     "max_steps": 100,
     "kpis": ["survival", "violations", "latency"],
@@ -49,6 +52,14 @@ fi
 
 echo -n "Benchmark service ($SERVICE_URL)... "
 if curl -sf "$SERVICE_URL/health" > /dev/null 2>&1; then
+  echo "OK"
+else
+  echo "UNREACHABLE"
+  exit 1
+fi
+
+echo -n "Synthetic data service ($SYNTH_SERVICE_URL)... "
+if curl -sf "$SYNTH_SERVICE_URL/health" > /dev/null 2>&1; then
   echo "OK"
 else
   echo "UNREACHABLE"

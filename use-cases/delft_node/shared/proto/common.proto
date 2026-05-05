@@ -1,0 +1,124 @@
+syntax = "proto3";
+package delft.common;
+
+enum LoadingLevel {
+  LOADING_LEVEL_UNSPECIFIED = 0;
+  LOADING_LEVEL_LOW = 1;
+  LOADING_LEVEL_MEDIUM = 2;
+  LOADING_LEVEL_HIGH = 3;
+}
+
+message LevelSpec {
+  int32 n = 1;
+  double avg_k = 2;
+  int32 diam = 3;
+  string dist_type = 4;
+  int32 max_k = 5;
+}
+
+message Int32List {
+  repeated int32 values = 1;
+}
+
+message ArtifactReference {
+  string protocol = 1;
+  string uri = 2;
+  string format = 3;
+  string media_type = 4;
+  map<string, string> metadata = 10;
+}
+
+message InterLevelConnection {
+  int32 from_level = 1;
+  int32 to_level = 2;
+  string type = 3;
+  double c = 4;
+  double gamma = 5;
+  map<string, string> metadata = 10;
+}
+
+message TransformerDegreePair {
+  int32 from_level = 1;
+  int32 to_level = 2;
+  repeated int32 source_degrees = 3;
+  repeated int32 target_degrees = 4;
+  map<string, string> metadata = 10;
+}
+
+message GridSynthesisRequest {
+  repeated LevelSpec level_specs = 1;
+  repeated InterLevelConnection connections = 2;
+  int32 seed = 3;
+  LoadingLevel loading_level = 4;
+  int32 ref_sys_id = 5;
+  map<string, string> metadata = 10;
+}
+
+message GridSynthesisConfig {
+  repeated Int32List degrees_by_level = 1;
+  repeated int32 diameters_by_level = 2;
+  repeated TransformerDegreePair transformer_degrees = 3;
+  repeated InterLevelConnection connections = 4;
+  int32 seed = 5;
+  LoadingLevel loading_level = 6;
+  int32 ref_sys_id = 7;
+  map<string, string> metadata = 10;
+}
+
+message GridNode {
+  string id = 1;
+  string bus_type = 2;
+  double voltage = 3;
+  double load_p = 4;
+  double load_q = 5;
+  double gen_p = 6;
+  double gen_q = 7;
+  map<string, string> metadata = 20;
+}
+
+message GridEdge {
+  string source = 1;
+  string target = 2;
+  double resistance = 3;
+  double reactance = 4;
+  double susceptance = 5;
+  double thermal_limit = 6;
+  map<string, string> metadata = 20;
+}
+
+message GridTopology {
+  bool directed = 1;
+  bool multigraph = 2;
+  repeated GridNode nodes = 3;
+  repeated GridEdge edges = 4;
+  map<string, string> metadata = 10;
+}
+
+message TimeSeriesPoint {
+  int64 index = 1;
+  double value = 2;
+  string timestamp = 3;
+}
+
+message TimeSeriesSeries {
+  string series_id = 1;
+  string unit = 2;
+  repeated TimeSeriesPoint points = 3;
+  map<string, string> metadata = 10;
+}
+
+message TimeSeriesSet {
+  repeated TimeSeriesSeries series = 1;
+  map<string, string> metadata = 10;
+}
+
+message GridData {
+  string grid_id = 1;
+  GridTopology topology = 2;
+  TimeSeriesSet time_series = 3;
+  int32 seed = 4;
+  string loading_level = 5;
+  int32 ref_sys_id = 6;
+  GridSynthesisConfig source_config = 7;
+  map<string, string> metadata = 20;
+}

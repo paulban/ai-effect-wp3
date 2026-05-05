@@ -1,7 +1,8 @@
 """Grid2Benchmark operations for AI-Effect orchestration.
 
-RunBenchmark keeps the existing request and response contract while delegating
-episode execution and KPI computation to the external grid2benchmark package.
+RunBenchmark supports gRPC data-plane inputs from the Delft data synthesizer while
+retaining inline/http control payload compatibility for benchmark config and
+algorithm source.
 """
 
 from __future__ import annotations
@@ -11,11 +12,17 @@ import importlib
 import importlib.util
 import json
 import logging
+import os
 import tempfile
+import threading
+from concurrent import futures
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from urllib.parse import urlparse
+
+import grpc
 
 from .control_interface import (
     DataReference,
@@ -23,14 +30,52 @@ from .control_interface import (
     ExecuteResponse,
     get_data_url,
 )
+from .proto_runtime import ensure_generated
 from .task_manager import get_task_manager
 
 logger = logging.getLogger(__name__)
+
+ensure_generated("common.proto", "data_synthesizer.proto", "benchmarking.proto")
+import benchmarking_pb2  # type: ignore  # noqa: E402
+import benchmarking_pb2_grpc  # type: ignore  # noqa: E402
+import data_synthesizer_pb2  # type: ignore  # noqa: E402
+import data_synthesizer_pb2_grpc  # type: ignore  # noqa: E402
 
 DEFAULT_ENV_NAME = "l2rpn_case14_sandbox"
 DEFAULT_MAX_STEPS = 200
 
 REQUIRED_ALGORITHM_FUNCTION = "build_agent"
+
+_cache_lock = threading.Lock()
+_cached_result_response: benchmarking_pb2.GetBenchmarkResultResponse | None = None
+
+
+class BenchmarkingServicer(benchmarking_pb2_grpc.BenchmarkingServiceServicer):
+    """gRPC servicer exposing cached benchmark results."""
+
+    def GetBenchmarkResult(self, request, context):
+        with _cache_lock:
+            if _cached_result_response is None:
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                context.set_details("No benchmark result available")
+                return benchmarking_pb2.GetBenchmarkResultResponse(
+                    success=False,
+                    message="No benchmark result available",
+                )
+            return _cached_result_response
+
+
+def start_grpc_server():
+    """Start the benchmark gRPC data plane server in background."""
+    grpc_port = os.environ.get("GRPC_PORT", "50051")
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    benchmarking_pb2_grpc.add_BenchmarkingServiceServicer_to_server(
+        BenchmarkingServicer(), server
+    )
+    server.add_insecure_port(f"[::]:{grpc_port}")
+    server.start()
+    logger.info(f"Benchmark gRPC server started on port {grpc_port}")
+    return server
 
 
 @dataclass(frozen=True)
@@ -65,9 +110,17 @@ class BenchmarkConfig:
         return self.scenarios[0].env_name if self.scenarios else DEFAULT_ENV_NAME
 
 
+def _fetch_http_data(uri: str, timeout: float = 60.0) -> str:
+    import httpx
+
+    response = httpx.get(uri, timeout=timeout)
+    response.raise_for_status()
+    return response.text
+
+
 def _decode_inline_json(input_ref: dict[str, Any]) -> dict[str, Any]:
     if input_ref.get("protocol") != "inline":
-        raise ValueError("Input protocol must be 'inline' for RunBenchmark")
+        raise ValueError("Input protocol must be 'inline'")
 
     raw = input_ref.get("uri", "")
     if not raw:
@@ -77,6 +130,45 @@ def _decode_inline_json(input_ref: dict[str, Any]) -> dict[str, Any]:
         return json.loads(base64.b64decode(raw).decode("utf-8"))
     except Exception as exc:
         raise ValueError(f"Invalid inline base64 JSON payload: {exc}") from exc
+
+
+def _fetch_grid_data_from_upstream(
+    grpc_uri: str,
+) -> data_synthesizer_pb2.GetGridDataResponse:
+    channel = grpc.insecure_channel(grpc_uri)
+    stub = data_synthesizer_pb2_grpc.DataSynthesizerServiceStub(channel)
+    try:
+        return stub.GetGridData(data_synthesizer_pb2.GetGridDataRequest())
+    finally:
+        channel.close()
+
+
+def _split_inputs(
+    inputs: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, data_synthesizer_pb2.GetGridDataResponse | None]:
+    payload: dict[str, Any] | None = None
+    grid_data_response: data_synthesizer_pb2.GetGridDataResponse | None = None
+
+    for input_ref in inputs:
+        protocol = str(input_ref.get("protocol", "")).lower()
+        if protocol == "inline":
+            payload = _decode_inline_json(input_ref)
+            continue
+
+        if protocol in ("http", "https"):
+            payload = json.loads(_fetch_http_data(str(input_ref.get("uri", ""))))
+            continue
+
+        if protocol == "grpc":
+            uri = str(input_ref.get("uri", ""))
+            if not uri:
+                raise ValueError("gRPC input is missing uri")
+            grid_data_response = _fetch_grid_data_from_upstream(uri)
+            continue
+
+        raise ValueError(f"Unsupported input protocol: {protocol}")
+
+    return payload, grid_data_response
 
 
 def _parse_benchmark_config(payload: dict[str, Any]) -> BenchmarkConfig:
@@ -215,15 +307,46 @@ def _parse_backend(raw_backend: Any) -> str | None:
     return backend
 
 
+def _default_algorithm_path() -> Path:
+    return (
+        Path(__file__).resolve().parent.parent / "algorithms" / "algorithm_template.py"
+    )
+
+
+def _get_algorithm_from_uri(source_uri: str) -> str:
+    parsed = urlparse(source_uri)
+    if parsed.scheme in ("http", "https"):
+        return _fetch_http_data(source_uri)
+
+    local_path = source_uri
+    if parsed.scheme == "file":
+        local_path = parsed.path
+
+    path = Path(local_path)
+    if not path.exists() or not path.is_file():
+        raise ValueError(f"algorithm.source_uri is not a valid file path: {source_uri}")
+    return path.read_text(encoding="utf-8")
+
+
 def _get_algorithm_source(payload: dict[str, Any]) -> str:
-    algorithm = payload.get("algorithm", {})
-    source_b64 = algorithm.get("source_b64")
-    source_plain = algorithm.get("source")
+    algorithm = payload.get("algorithm", {}) if isinstance(payload, dict) else {}
+    source_b64 = algorithm.get("source_b64") if isinstance(algorithm, dict) else None
+    source_plain = algorithm.get("source") if isinstance(algorithm, dict) else None
+    source_uri = algorithm.get("source_uri") if isinstance(algorithm, dict) else None
 
     if source_b64:
         return base64.b64decode(source_b64).decode("utf-8")
     if source_plain:
         return source_plain
+    if source_uri:
+        return _get_algorithm_from_uri(str(source_uri))
+
+    default_path = _default_algorithm_path()
+    if default_path.exists():
+        logger.info(
+            "No algorithm payload provided, using default algorithm_template.py"
+        )
+        return default_path.read_text(encoding="utf-8")
 
     raise ValueError(
         "algorithm source missing. Provide algorithm.source or algorithm.source_b64"
@@ -348,8 +471,7 @@ def _normalize_episode_results(raw_episodes: Any) -> list[dict[str, Any]]:
 
 
 def _normalize_benchmark_result(
-    raw_result: Any,
-    config: BenchmarkConfig,
+    raw_result: Any, config: BenchmarkConfig
 ) -> dict[str, Any]:
     result_dict = _object_to_dict(raw_result)
     raw_scenarios = result_dict.get("scenarios", [])
@@ -459,10 +581,7 @@ def _normalize_benchmark_result(
     return normalized
 
 
-def _invoke_grid2benchmark(
-    config: BenchmarkConfig,
-    source_code: str,
-) -> dict[str, Any]:
+def _invoke_grid2benchmark(config: BenchmarkConfig, source_code: str) -> dict[str, Any]:
     try:
         grid2benchmark = importlib.import_module("grid2benchmark")
     except Exception as exc:
@@ -515,10 +634,8 @@ def _invoke_grid2benchmark(
 
         scenarios.append(package_scenario_config(**scenario_kwargs))
 
-    scenarios = tuple(scenarios)
-
     benchmark_config_kwargs: dict[str, Any] = {
-        "scenarios": scenarios,
+        "scenarios": tuple(scenarios),
         "max_steps": config.max_steps,
     }
     if config.kpis is not None:
@@ -529,13 +646,147 @@ def _invoke_grid2benchmark(
     return _normalize_benchmark_result(result, config)
 
 
+def _metric_value_from_any(value: Any) -> benchmarking_pb2.MetricValue:
+    metric = benchmarking_pb2.MetricValue()
+
+    if isinstance(value, bool):
+        metric.text = str(value)
+        return metric
+
+    if isinstance(value, (int, float)):
+        metric.scalar = float(value)
+        return metric
+
+    if isinstance(value, list) and all(
+        isinstance(item, (int, float)) for item in value
+    ):
+        metric.series.values.extend(float(item) for item in value)
+        return metric
+
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if isinstance(nested, (dict, list)):
+                metric.attributes.values[str(key)] = json.dumps(nested)
+            else:
+                metric.attributes.values[str(key)] = str(nested)
+        return metric
+
+    metric.text = str(value)
+    return metric
+
+
+def _to_benchmark_result_proto(
+    result: dict[str, Any],
+) -> benchmarking_pb2.BenchmarkResult:
+    structured = benchmarking_pb2.BenchmarkRunResult()
+    episodes = result.get("episodes", [])
+    metadata = result.get("metadata", {})
+    scenario_metadata = (
+        metadata.get("scenarios", []) if isinstance(metadata, dict) else []
+    )
+
+    episodes_by_scenario: dict[int, list[dict[str, Any]]] = {}
+    for episode in episodes:
+        scenario_index = int(episode.get("scenario_index", 0))
+        episodes_by_scenario.setdefault(scenario_index, []).append(episode)
+
+    for index, scenario in enumerate(scenario_metadata):
+        if not isinstance(scenario, dict):
+            continue
+        scenario_result = structured.scenarios.add(
+            scenario_index=int(scenario.get("scenario_index", index)),
+            environment=str(
+                scenario.get("environment", {}).get("env_name", DEFAULT_ENV_NAME)
+                if isinstance(scenario.get("environment"), dict)
+                else DEFAULT_ENV_NAME
+            ),
+        )
+
+        executed_ids = scenario.get("executed_time_series_ids", [])
+        if isinstance(executed_ids, list):
+            scenario_result.executed_time_series_ids.extend(
+                int(v) for v in executed_ids
+            )
+
+        for episode in episodes_by_scenario.get(scenario_result.scenario_index, []):
+            scenario_result.episodes.add(
+                episode_index=int(episode.get("episode_index", 0)),
+                scenario_index=int(episode.get("scenario_index", 0)),
+                steps=int(episode.get("steps", 0)),
+                overload_violations=int(episode.get("overload_violations", 0)),
+                runtime_seconds=float(episode.get("runtime_seconds", 0.0)),
+                terminated=bool(episode.get("terminated", True)),
+            )
+
+        scenario_kpis = scenario.get("kpis", {})
+        if isinstance(scenario_kpis, dict):
+            for key, value in scenario_kpis.items():
+                scenario_result.metrics[str(key)].CopyFrom(
+                    _metric_value_from_any(value)
+                )
+
+        for key, value in scenario.items():
+            if key in {
+                "scenario_index",
+                "environment",
+                "executed_time_series_ids",
+                "kpis",
+            }:
+                continue
+            scenario_result.metadata[str(key)] = (
+                json.dumps(value) if isinstance(value, (dict, list)) else str(value)
+            )
+
+    total_runtime = sum(float(e.get("runtime_seconds", 0.0)) for e in episodes)
+    total_violations = sum(int(e.get("overload_violations", 0)) for e in episodes)
+    total_steps = sum(int(e.get("steps", 0)) for e in episodes)
+
+    structured.summary.scenario_count = len(structured.scenarios)
+    structured.summary.episode_count = len(episodes)
+    structured.summary.total_overload_violations = total_violations
+    structured.summary.total_runtime_seconds = total_runtime
+    structured.summary.average_episode_length = (
+        total_steps / len(episodes) if episodes else 0.0
+    )
+
+    aggregate_metrics = result.get("kpis", {})
+    if isinstance(aggregate_metrics, dict):
+        for key, value in aggregate_metrics.items():
+            structured.summary.aggregates[str(key)].CopyFrom(
+                _metric_value_from_any(value)
+            )
+
+    if isinstance(metadata, dict):
+        for key, value in metadata.items():
+            if key == "scenarios":
+                continue
+            structured.metadata[str(key)] = (
+                json.dumps(value) if isinstance(value, (dict, list)) else str(value)
+            )
+
+    benchmark_result = benchmarking_pb2.BenchmarkResult(structured=structured)
+    benchmark_result.metadata["format"] = "benchmark.run_result.v2"
+    benchmark_result.metadata["metric_schema"] = "map<string,MetricValue>"
+    return benchmark_result
+
+
 def execute_RunBenchmark(request: ExecuteRequest) -> ExecuteResponse:
     """Run the benchmark with user template algorithm against grid2benchmark."""
+    global _cached_result_response
+
     if not request.inputs:
         return ExecuteResponse(status="failed", error="No benchmark input provided")
 
     try:
-        payload = _decode_inline_json(request.inputs[0])
+        payload, grid_data_response = _split_inputs(request.inputs)
+        payload = payload or {}
+
+        if grid_data_response is not None and not grid_data_response.success:
+            return ExecuteResponse(
+                status="failed",
+                error=f"Upstream synthesized grid unavailable: {grid_data_response.message}",
+            )
+
         config = _parse_benchmark_config(payload)
         source_code = _get_algorithm_source(payload)
 
@@ -543,16 +794,37 @@ def execute_RunBenchmark(request: ExecuteRequest) -> ExecuteResponse:
         _validate_algorithm_module(module)
 
         benchmark_result = _invoke_grid2benchmark(config, source_code)
+        if grid_data_response is not None:
+            benchmark_result.setdefault("metadata", {})
+            benchmark_result["metadata"][
+                "upstream_grid_id"
+            ] = grid_data_response.grid_data.grid_id
+            benchmark_result["metadata"]["upstream_grid_nodes"] = len(
+                grid_data_response.grid_data.topology.nodes
+            )
+            benchmark_result["metadata"]["upstream_grid_edges"] = len(
+                grid_data_response.grid_data.topology.edges
+            )
 
         result_json = json.dumps(benchmark_result, indent=2)
         get_task_manager().store_data(request.task_id, result_json, "json")
 
+        with _cache_lock:
+            _cached_result_response = benchmarking_pb2.GetBenchmarkResultResponse(
+                success=True,
+                message="Benchmark result available",
+                result=_to_benchmark_result_proto(benchmark_result),
+            )
+
+        grpc_host = os.environ.get("GRPC_HOST", "benchmark-runner")
+        grpc_port = os.environ.get("GRPC_PORT", "50051")
+
         return ExecuteResponse(
             status="complete",
             output=DataReference(
-                protocol="http",
-                uri=get_data_url(request.task_id),
-                format="json",
+                protocol="grpc",
+                uri=f"{grpc_host}:{grpc_port}",
+                format="GetBenchmarkResult",
             ),
         )
     except Exception as exc:

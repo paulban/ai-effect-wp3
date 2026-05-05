@@ -13,15 +13,18 @@
 services:
   synthetic-data:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: data_synthesizer/Dockerfile
     container_name: tef-synthetic-data
     ports:
       - "8003:8080"
+      - "50053:50051"
     environment:
       - ML_GRETEL_PORT=8080
       - ML_GRETEL_RELOAD=False
       - SELF_URL=http://synthetic-data:8080
+      - GRPC_HOST=synthetic-data
+      - GRPC_PORT=50051
     volumes:
       - synthetic_models:/app/models
     networks:

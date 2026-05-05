@@ -1,21 +1,66 @@
 {
-  "name": "Delft Grid2Op Benchmark",
-  "pipeline_id": "delft-grid2op-benchmark-001",
-  "creation_date": "2026-03-17",
+  "name": "Delft Synth + Benchmark Pipeline",
+  "pipeline_id": "delft-synth-benchmark-001",
+  "creation_date": "2026-05-05",
   "type": "pipeline-topology/v2",
   "version": "2.0",
   "nodes": [
     {
+      "container_name": "grid_configurator",
+      "proto_uri": "data_synthesizer.proto",
+      "image": "tef-synthetic-data:latest",
+      "node_type": "DataSource",
+      "operation_signature_list": [
+        {
+          "operation_signature": {
+            "operation_name": "ConfigureGrid",
+            "output_message_name": "GetGridConfigResponse"
+          },
+          "connected_to": [
+            {
+              "container_name": "grid_synthesizer",
+              "operation_signature": {
+                "operation_name": "SynthesizeGrid"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "container_name": "grid_synthesizer",
+      "proto_uri": "data_synthesizer.proto",
+      "image": "tef-synthetic-data:latest",
+      "node_type": "DataSource",
+      "operation_signature_list": [
+        {
+          "operation_signature": {
+            "operation_name": "SynthesizeGrid",
+            "input_message_name": "GetGridConfigRequest",
+            "output_message_name": "GetGridDataResponse"
+          },
+          "connected_to": [
+            {
+              "container_name": "benchmark-runner",
+              "operation_signature": {
+                "operation_name": "RunBenchmark"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "container_name": "benchmark-runner",
-      "proto_uri": "benchmark.proto",
+      "proto_uri": "benchmarking.proto",
       "image": "delft-benchmark-runner:latest",
       "node_type": "MLModel",
       "operation_signature_list": [
         {
           "operation_signature": {
             "operation_name": "RunBenchmark",
-            "input_message_name": "BenchmarkRequest",
-            "output_message_name": "BenchmarkResult",
+            "input_message_name": "BenchmarkRunRequest",
+            "output_message_name": "GetBenchmarkResultResponse",
             "input_message_stream": false,
             "output_message_stream": false
           },

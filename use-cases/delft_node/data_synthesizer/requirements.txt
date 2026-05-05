@@ -2,6 +2,9 @@ fastapi
 uvicorn
 pydantic
 httpx
+grpcio
+grpcio-tools
+protobuf
 networkx
 numpy
 scipy

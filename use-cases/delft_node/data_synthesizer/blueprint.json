@@ -7,7 +7,7 @@
   "nodes": [
     {
       "container_name": "grid_configurator",
-      "proto_uri": "synth_powergrid.proto",
+      "proto_uri": "data_synthesizer.proto",
       "image": "synth-powergrid-adapter:latest",
       "node_type": "DataSource",
       "operation_signature_list": [
@@ -29,7 +29,7 @@
     },
     {
       "container_name": "grid_synthesizer",
-      "proto_uri": "synth_powergrid.proto",
+      "proto_uri": "data_synthesizer.proto",
       "image": "synth-powergrid-adapter:latest",
       "node_type": "DataSink",
       "operation_signature_list": [

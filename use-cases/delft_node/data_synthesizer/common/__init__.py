@@ -18,6 +18,7 @@ from .control_interface import (
 from .synth_operations import (
     execute_ConfigureGrid,
     execute_SynthesizeGrid,
+    start_grpc_server,
     synth_handlers,
 )
 
@@ -39,5 +40,6 @@ __all__ = [
     # Synth operations
     "execute_ConfigureGrid",
     "execute_SynthesizeGrid",
+    "start_grpc_server",
     "synth_handlers",
 ]

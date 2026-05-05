@@ -1,15 +1,18 @@
 services:
   benchmark-runner:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: benchmarking/Dockerfile
     container_name: tef-benchmark-runner
     ports:
       - "8004:8080"
+      - "50054:50051"
     environment:
       - HOST=0.0.0.0
       - PORT=8080
       - SELF_URL=http://benchmark-runner:8080
+      - GRPC_HOST=benchmark-runner
+      - GRPC_PORT=50051
     networks:
       - services
     restart: unless-stopped

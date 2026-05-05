@@ -1,6 +1,9 @@
 fastapi==0.115.6
 uvicorn==0.32.1
 httpx==0.28.1
+grpcio==1.66.1
+grpcio-tools==1.66.1
+protobuf==5.27.2
 grid2evaluate @ git+https://github.com/AI4REALNET/grid2evaluate.git
 grid2benchmark @ git+https://github.com/paulban/grid2benchmark.git@main
 grid2op @ git+https://github.com/Grid2op/grid2op.git@env_recorder

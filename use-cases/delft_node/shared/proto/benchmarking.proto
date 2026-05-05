@@ -1,0 +1,124 @@
+syntax = "proto3";
+package delft.benchmarking;
+
+import "common.proto";
+
+enum BenchmarkInputKind {
+  BENCHMARK_INPUT_KIND_UNSPECIFIED = 0;
+  BENCHMARK_INPUT_KIND_CANONICAL_GRID = 1;
+  BENCHMARK_INPUT_KIND_ARTIFACT_REFERENCES = 2;
+}
+
+message SourceConfig {
+  string format = 1;
+  string path = 2;
+  map<string, string> metadata = 10;
+}
+
+message ScenarioConfig {
+  string env_name = 1;
+  repeated int32 time_series_ids = 2;
+  SourceConfig topology = 3;
+  SourceConfig time_series = 4;
+  string backend = 5;
+  map<string, string> metadata = 10;
+}
+
+message BenchmarkConfig {
+  int32 max_steps = 1;
+  repeated string kpis = 2;
+  repeated ScenarioConfig scenarios = 3;
+  map<string, string> metadata = 10;
+}
+
+message AlgorithmPayload {
+  bytes source_bytes = 1;
+  string source_uri = 2;
+  string encoding = 3;
+  string entrypoint = 4;
+  map<string, string> metadata = 10;
+}
+
+message BenchmarkArtifacts {
+  delft.common.ArtifactReference topology = 1;
+  delft.common.ArtifactReference time_series = 2;
+  map<string, string> metadata = 10;
+}
+
+// Preferred request envelope. Allows either canonical GridData or artifact refs.
+message BenchmarkExecutionSpec {
+  BenchmarkConfig config = 1;
+  AlgorithmPayload algorithm = 2;
+  BenchmarkInputKind input_kind = 3;
+  delft.common.GridData grid_data = 4;
+  BenchmarkArtifacts artifacts = 5;
+  map<string, string> metadata = 10;
+}
+
+message EpisodeResult {
+  int32 episode_index = 1;
+  int32 scenario_index = 2;
+  int32 steps = 3;
+  int32 overload_violations = 4;
+  double runtime_seconds = 5;
+  bool terminated = 6;
+}
+
+message NumericSeries {
+  repeated double values = 1;
+}
+
+message StringAttributes {
+  map<string, string> values = 1;
+}
+
+// Preferred metric envelope with explicit type selection.
+message MetricValue {
+  oneof kind {
+    double scalar = 1;
+    NumericSeries series = 2;
+    string text = 3;
+    StringAttributes attributes = 4;
+  }
+}
+
+message ScenarioResult {
+  int32 scenario_index = 1;
+  string environment = 2;
+  repeated int32 executed_time_series_ids = 3;
+  repeated EpisodeResult episodes = 4;
+  map<string, MetricValue> metrics = 5;
+  map<string, string> metadata = 10;
+}
+
+message BenchmarkSummary {
+  int32 scenario_count = 1;
+  int32 episode_count = 2;
+  int32 total_overload_violations = 3;
+  double total_runtime_seconds = 4;
+  double average_episode_length = 5;
+  map<string, MetricValue> aggregates = 10;
+}
+
+message BenchmarkRunResult {
+  repeated ScenarioResult scenarios = 1;
+  BenchmarkSummary summary = 2;
+  map<string, string> metadata = 10;
+}
+
+message BenchmarkResult {
+  BenchmarkRunResult structured = 1;
+  map<string, string> metadata = 10;
+}
+
+message GetBenchmarkResultRequest {}
+
+message GetBenchmarkResultResponse {
+  bool success = 1;
+  string message = 2;
+  BenchmarkResult result = 3;
+}
+
+service BenchmarkingService {
+  rpc GetBenchmarkResult(GetBenchmarkResultRequest) returns (GetBenchmarkResultResponse);
+}
