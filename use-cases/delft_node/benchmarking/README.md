@@ -1,15 +1,15 @@
 # Delft Node Benchmarking Use Case (Grid2Benchmark)
 
-This use case adds a benchmarking service for network topology optimization algorithms.
+This use case runs a canonical protobuf/gRPC benchmark pipeline for network topology optimization algorithms.
 
 ## MVP scope
-- Single benchmark service compatible with AI-Effect orchestrator control endpoints.
+- Benchmark service compatible with AI-Effect control endpoints plus canonical gRPC data-plane artifacts.
 - Input payload includes:
   - test case metadata (pandapower-formatted topology and time series metadata)
   - algorithm code template payload
 - Algorithm submission model: Python file implementing build_agent(env, context).
 - Benchmark engine: grid2benchmark (public repository dependency).
-- KPI evaluation: delegated to grid2benchmark; the wrapper exposes the first scenario's KPI block at the top level and keeps scenario summary data in metadata.
+- KPI evaluation: delegated to grid2benchmark; results are serialized as canonical `BenchmarkRunResult` (structured scenarios + summary aggregates).
 - Packaging:
   - Docker use-case deployment
   - Python package via pyproject.toml
@@ -48,7 +48,7 @@ This use case adds a benchmarking service for network topology optimization algo
   - python benchmark_cli.py --algorithm algorithms/algorithm_template.py
   - python benchmark_cli.py --algorithm algorithms/greedy_baseline.py
 
-## Canonical Input Payload (inline JSON)
+## Canonical Control Payload (inline JSON)
 {
   "benchmark": {
     "max_steps": 100,
@@ -92,9 +92,9 @@ This use case adds a benchmarking service for network topology optimization algo
 }
 
 ## Output shape notes
-- The AI-Effect wrapper preserves the existing top-level fields: `environment`, `input_summary`, `episodes`, and `kpis`.
-- `grid2benchmark` native `summary` and per-scenario metadata are preserved under `metadata`.
-- If `benchmark.scenarios` is supplied, it is passed through directly to `grid2benchmark`.
+- The benchmark gRPC response is `GetBenchmarkResultResponse` with `result.structured` (`BenchmarkRunResult`).
+- Scenario-level metrics are in `result.structured.scenarios[*].metrics`.
+- Aggregate metrics are in `result.structured.summary.aggregates`.
 - Scenario field names follow `grid2benchmark`: `env_name`, `time_series_ids`, `topology`, `time_series`, `backend`.
 
 ## Notes on dependencies

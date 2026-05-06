@@ -59,7 +59,7 @@
         {
           "operation_signature": {
             "operation_name": "RunBenchmark",
-            "input_message_name": "BenchmarkRunRequest",
+            "input_message_name": "BenchmarkExecutionSpec",
             "output_message_name": "GetBenchmarkResultResponse",
             "input_message_stream": false,
             "output_message_stream": false

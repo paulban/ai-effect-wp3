@@ -1,8 +1,7 @@
 """Grid2Benchmark operations for AI-Effect orchestration.
 
-RunBenchmark supports gRPC data-plane inputs from the Delft data synthesizer while
-retaining inline/http control payload compatibility for benchmark config and
-algorithm source.
+RunBenchmark consumes canonical protobuf/gRPC inputs from the Delft data plane and
+publishes canonical structured benchmark protobuf results.
 """
 
 from __future__ import annotations
@@ -771,7 +770,12 @@ def _to_benchmark_result_proto(
 
 
 def execute_RunBenchmark(request: ExecuteRequest) -> ExecuteResponse:
-    """Run the benchmark with user template algorithm against grid2benchmark."""
+    """Run the benchmark and publish a canonical structured protobuf result.
+
+    The benchmark operation consumes inputs resolved from AI-Effect DataReference
+    entries, executes grid2benchmark, and stores a BenchmarkRunResult payload under
+    GetBenchmarkResult.
+    """
     global _cached_result_response
 
     if not request.inputs:

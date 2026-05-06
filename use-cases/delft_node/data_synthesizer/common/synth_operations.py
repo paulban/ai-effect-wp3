@@ -1,16 +1,17 @@
 """Synthetic power grid operation handlers for AI-Effect orchestrator.
 
 This module provides operation handlers for the Chung-Lu-Chain power grid synthesizer.
-Data is exchanged via HTTP URL references following the AI-Effect protocol.
+Control execution uses AI-Effect HTTP control endpoints, while inter-node data exchange
+uses the canonical protobuf/gRPC data plane.
 
 Pipeline:
     ConfigureGrid -> SynthesizeGrid
 
 Handlers:
-    - ConfigureGrid: Accept grid configuration parameters, generate InputConfigurator
-      params, and serve them via HTTP URL.
-    - SynthesizeGrid: Take configuration params, generate grid topology, apply full
-      physics pipeline, and output the enriched grid data as JSON.
+        - ConfigureGrid: Accept synthesis parameters and publish a
+            delft.common.GridSynthesisConfig artifact via GetGridConfig.
+        - SynthesizeGrid: Consume GridSynthesisConfig, generate the grid, and publish
+            delft.common.GridData via GetGridData.
 
 Usage:
     from common import synth_handlers, run
@@ -395,7 +396,8 @@ def execute_ConfigureGrid(request: ExecuteRequest) -> ExecuteResponse:
         ref_sys_id: Reference system ID (default: 1)
 
     Returns:
-        DataReference with HTTP URL to JSON configuration.
+        DataReference(protocol="grpc", format="GetGridConfig") with a canonical
+        GridSynthesisConfig payload served by this node.
     """
     global _cached_config_response
 
@@ -487,7 +489,8 @@ def execute_SynthesizeGrid(request: ExecuteRequest) -> ExecuteResponse:
     """Generate a synthetic power grid using configuration from ConfigureGrid.
 
     Input:
-        inputs[0]: HTTP URL reference to JSON configuration (from ConfigureGrid)
+        inputs[0]: DataReference from ConfigureGrid. Canonical path is
+        protocol="grpc" and format="GetGridConfig".
 
     Runs the full generation pipeline:
         1. Generate base topology with PowerGridGenerator
@@ -498,7 +501,8 @@ def execute_SynthesizeGrid(request: ExecuteRequest) -> ExecuteResponse:
         6. Allocate transmission lines
 
     Returns:
-        DataReference with HTTP URL to JSON graph data (node-link format).
+        DataReference(protocol="grpc", format="GetGridData") with canonical
+        GridData payload.
     """
     global _cached_grid_response
 
