@@ -123,7 +123,9 @@ message GridData {
   map<string, string> metadata = 20;
 }
 
-message GetGridConfigRequest {}
+message GetGridConfigRequest {
+
+}
 
 message GetGridConfigResponse {
   bool success = 1;
@@ -131,7 +133,9 @@ message GetGridConfigResponse {
   GridSynthesisConfig config = 3;
 }
 
-message GetGridDataRequest {}
+message GetGridDataRequest {
+  
+}
 
 message GetGridDataResponse {
   bool success = 1;
