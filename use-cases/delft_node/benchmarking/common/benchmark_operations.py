@@ -109,6 +109,14 @@ class BenchmarkConfig:
         return self.scenarios[0].env_name if self.scenarios else DEFAULT_ENV_NAME
 
 
+_DEFAULT_VOLTAGE_BY_LEVEL = {
+    0: 220.0,
+    1: 110.0,
+    2: 20.0,
+    3: 10.0,
+}
+
+
 def _fetch_http_data(uri: str, timeout: float = 60.0) -> str:
     import httpx
 
@@ -645,6 +653,307 @@ def _invoke_grid2benchmark(config: BenchmarkConfig, source_code: str) -> dict[st
     return _normalize_benchmark_result(result, config)
 
 
+def _grid_node_voltage_kv(node: Any) -> float:
+    if float(node.voltage or 0.0) > 0.0:
+        return float(node.voltage)
+
+    try:
+        level = int(node.metadata.get("voltage_level", "0"))
+    except Exception:
+        level = 0
+    return _DEFAULT_VOLTAGE_BY_LEVEL.get(level, 110.0)
+
+
+def _grid_node_name(node: Any) -> str:
+    return str(node.id or f"bus-{id(node)}")
+
+
+def _create_pandapower_topology_artifact(
+    grid_data: Any, output_dir: Path
+) -> tuple[Path, dict[str, Any]]:
+    import pandapower as pp  # type: ignore
+
+    net = pp.create_empty_network(sn_mva=100.0)
+    bus_index_by_id: dict[str, int] = {}
+
+    for node in grid_data.topology.nodes:
+        bus_idx = pp.create_bus(
+            net,
+            vn_kv=max(_grid_node_voltage_kv(node), 0.1),
+            name=_grid_node_name(node),
+        )
+        bus_index_by_id[str(node.id)] = int(bus_idx)
+
+    if not bus_index_by_id:
+        raise ValueError("GridData topology has no nodes")
+
+    slack_node_id = next(iter(bus_index_by_id.keys()))
+    created_loads = 0
+    created_gens = 0
+    total_load_p = 0.0
+    for node in grid_data.topology.nodes:
+        node_id = str(node.id)
+        bus_idx = bus_index_by_id[node_id]
+        load_p = float(node.load_p or 0.0)
+        load_q = float(node.load_q or 0.0)
+        gen_p = float(node.gen_p or 0.0)
+        gen_q = float(node.gen_q or 0.0)
+
+        if node.bus_type.upper() == "REF":
+            slack_node_id = node_id
+
+        if load_p or load_q:
+            pp.create_load(
+                net,
+                bus_idx,
+                p_mw=load_p,
+                q_mvar=load_q,
+                name=f"load_{node_id}",
+            )
+            created_loads += 1
+            total_load_p += load_p
+
+        if gen_p or gen_q:
+            pp.create_gen(
+                net,
+                bus_idx,
+                p_mw=max(gen_p, 0.1),
+                vm_pu=1.0,
+                name=f"gen_{node_id}",
+                type="thermal",
+            )
+            created_gens += 1
+
+    bus_ids = list(bus_index_by_id.keys())
+    non_slack_bus_ids = [bus_id for bus_id in bus_ids if bus_id != slack_node_id] or [
+        slack_node_id
+    ]
+
+    target_load_count = max(created_loads, 1)
+    target_gen_count = max(created_gens, 1)
+
+    while len(net.load) < target_load_count:
+        fallback_index = len(net.load) % len(non_slack_bus_ids)
+        fallback_bus = non_slack_bus_ids[fallback_index]
+        pp.create_load(
+            net,
+            bus_index_by_id[fallback_bus],
+            p_mw=10.0,
+            q_mvar=2.0,
+            name=f"load_{fallback_bus}_{len(net.load)}",
+        )
+        total_load_p += 10.0
+
+    while len(net.gen) < target_gen_count:
+        fallback_index = len(net.gen) % len(bus_ids)
+        fallback_bus = bus_ids[fallback_index]
+        pp.create_gen(
+            net,
+            bus_index_by_id[fallback_bus],
+            p_mw=max(total_load_p / max(target_gen_count, 1), 10.0),
+            vm_pu=1.0,
+            name=f"gen_{fallback_bus}_{len(net.gen)}",
+            type="thermal",
+        )
+
+    pp.create_ext_grid(
+        net,
+        bus_index_by_id[slack_node_id],
+        vm_pu=1.0,
+        name=f"slack_{slack_node_id}",
+    )
+
+    for edge in grid_data.topology.edges:
+        from_bus = bus_index_by_id.get(str(edge.source))
+        to_bus = bus_index_by_id.get(str(edge.target))
+        if from_bus is None or to_bus is None or from_bus == to_bus:
+            continue
+
+        r_ohm = abs(float(edge.resistance or 0.0))
+        x_ohm = abs(float(edge.reactance or 0.0))
+        b_value = abs(float(edge.susceptance or 0.0))
+        thermal_limit = float(edge.thermal_limit or 0.0)
+
+        max_i_ka = thermal_limit if thermal_limit > 0 else None
+        if max_i_ka is None:
+            try:
+                max_i_ka = float(edge.metadata.get("capacity", "0") or 0.0)
+            except Exception:
+                max_i_ka = 0.0
+        if max_i_ka <= 0:
+            max_i_ka = 1.0
+
+        pp.create_line_from_parameters(
+            net,
+            from_bus=from_bus,
+            to_bus=to_bus,
+            length_km=1.0,
+            r_ohm_per_km=max(r_ohm, 1e-6),
+            x_ohm_per_km=max(x_ohm, 1e-6),
+            c_nf_per_km=b_value * 1e3,
+            max_i_ka=max_i_ka,
+            name=f"line-{edge.source}-{edge.target}",
+        )
+
+    topology_path = output_dir / "grid.json"
+    pp.to_json(net, str(topology_path))
+    return topology_path, {
+        "load_names": [str(name) for name in net.load["name"].tolist()],
+        "load_q": [float(value) for value in net.load["q_mvar"].tolist()],
+        "gen_names": [str(name) for name in net.gen["name"].tolist()],
+        "gen_p": [float(value) for value in net.gen["p_mw"].tolist()],
+        "gen_v": [
+            float(net.bus.loc[int(bus), "vn_kv"]) * float(vm_pu)
+            for bus, vm_pu in zip(net.gen["bus"].tolist(), net.gen["vm_pu"].tolist())
+        ],
+        "fallback_elements": bool(
+            created_loads == 1 and created_gens == 1 and total_load_p <= 10.0
+        ),
+    }
+
+
+def _series_values_by_id(grid_data: Any) -> dict[str, list[float]]:
+    time_series = getattr(grid_data, "time_series", None)
+    if time_series is None or len(time_series.series) == 0:
+        return {}
+
+    out: dict[str, list[float]] = {}
+    for series in time_series.series:
+        values = [float(point.value) for point in series.points]
+        if values:
+            out[str(series.series_id)] = values
+    return out
+
+
+def _write_quantity_csv(path: Path, columns: dict[str, list[float]]) -> None:
+    import pandas as pd  # type: ignore
+
+    frame = pd.DataFrame(columns)
+    frame.to_csv(path, index=False)
+
+
+def _create_csv_time_series_artifact(
+    grid_data: Any,
+    topology_info: dict[str, Any],
+    output_dir: Path,
+) -> Path:
+    series_by_id = _series_values_by_id(grid_data)
+
+    time_series_dir = output_dir / "time_series_csv"
+    time_series_dir.mkdir(parents=True, exist_ok=True)
+
+    default_length = 12
+    max_length = max(
+        (len(values) for values in series_by_id.values()), default=default_length
+    )
+
+    def _payload(
+        prefix: str, names: list[str], defaults: list[float]
+    ) -> dict[str, list[float]]:
+        payload: dict[str, list[float]] = {}
+        for index, name in enumerate(names):
+            direct_key = f"{prefix}:{name}"
+            values = series_by_id.get(direct_key)
+            if not values:
+                fallback = defaults[index] if index < len(defaults) else 0.0
+                values = [fallback] * max_length
+            elif len(values) < max_length:
+                values = values + [values[-1]] * (max_length - len(values))
+            payload[name] = values
+        return payload
+
+    load_names = topology_info.get("load_names", [])
+    load_q_defaults = topology_info.get("load_q", [])
+    gen_names = topology_info.get("gen_names", [])
+    gen_p_defaults = topology_info.get("gen_p", [])
+    gen_v_defaults = topology_info.get("gen_v", [])
+
+    _write_quantity_csv(
+        time_series_dir / "load_p.csv",
+        _payload("load_p", load_names, [10.0] * len(load_names)),
+    )
+    _write_quantity_csv(
+        time_series_dir / "load_q.csv", _payload("load_q", load_names, load_q_defaults)
+    )
+    _write_quantity_csv(
+        time_series_dir / "prod_p.csv", _payload("prod_p", gen_names, gen_p_defaults)
+    )
+    _write_quantity_csv(
+        time_series_dir / "prod_v.csv", _payload("prod_v", gen_names, gen_v_defaults)
+    )
+    _write_quantity_csv(
+        time_series_dir / "load_p_forecasted.csv",
+        _payload("load_p", load_names, [10.0] * len(load_names)),
+    )
+    _write_quantity_csv(
+        time_series_dir / "load_q_forecasted.csv",
+        _payload("load_q", load_names, load_q_defaults),
+    )
+    _write_quantity_csv(
+        time_series_dir / "prod_p_forecasted.csv",
+        _payload("prod_p", gen_names, gen_p_defaults),
+    )
+    _write_quantity_csv(
+        time_series_dir / "prod_v_forecasted.csv",
+        _payload("prod_v", gen_names, gen_v_defaults),
+    )
+
+    (time_series_dir / "start_datetime.info").write_text(
+        "2020-01-01 00:00\n", encoding="utf-8"
+    )
+    (time_series_dir / "time_interval.info").write_text("00:05\n", encoding="utf-8")
+    return time_series_dir
+
+
+def _adapt_grid_data_to_config(
+    config: BenchmarkConfig, grid_data: Any, work_dir: Path
+) -> BenchmarkConfig:
+    adapted_scenarios: list[ScenarioConfig] = []
+    for index, scenario in enumerate(config.scenarios):
+        scenario_dir = work_dir / f"scenario_{index}"
+        scenario_dir.mkdir(parents=True, exist_ok=True)
+
+        topology = scenario.topology
+        time_series = scenario.time_series
+
+        if topology is None or time_series is None:
+            topology_path, topology_info = _create_pandapower_topology_artifact(
+                grid_data,
+                scenario_dir,
+            )
+            time_series_path = _create_csv_time_series_artifact(
+                grid_data,
+                topology_info,
+                scenario_dir,
+            )
+            if topology is None:
+                topology = TopologySourceConfig(
+                    format="pandapower",
+                    path=str(topology_path),
+                )
+            if time_series is None:
+                time_series = TimeSeriesSourceConfig(
+                    format="csv",
+                    path=str(time_series_path),
+                )
+
+        adapted_scenarios.append(
+            ScenarioConfig(
+                env_name=scenario.env_name,
+                time_series_ids=scenario.time_series_ids,
+                topology=topology,
+                time_series=time_series,
+                backend=scenario.backend,
+            )
+        )
+
+    return BenchmarkConfig(
+        max_steps=config.max_steps,
+        scenarios=tuple(adapted_scenarios),
+        kpis=config.kpis,
+    )
+
+
 def _metric_value_from_any(value: Any) -> benchmarking_pb2.MetricValue:
     metric = benchmarking_pb2.MetricValue()
 
@@ -797,7 +1106,16 @@ def execute_RunBenchmark(request: ExecuteRequest) -> ExecuteResponse:
         module = _load_algorithm_module(source_code)
         _validate_algorithm_module(module)
 
-        benchmark_result = _invoke_grid2benchmark(config, source_code)
+        with tempfile.TemporaryDirectory(prefix="griddata_adapter_") as work_dir:
+            if grid_data_response is not None:
+                config = _adapt_grid_data_to_config(
+                    config,
+                    grid_data_response.grid_data,
+                    Path(work_dir),
+                )
+
+            benchmark_result = _invoke_grid2benchmark(config, source_code)
+
         if grid_data_response is not None:
             benchmark_result.setdefault("metadata", {})
             benchmark_result["metadata"][
@@ -809,6 +1127,7 @@ def execute_RunBenchmark(request: ExecuteRequest) -> ExecuteResponse:
             benchmark_result["metadata"]["upstream_grid_edges"] = len(
                 grid_data_response.grid_data.topology.edges
             )
+            benchmark_result["metadata"]["upstream_grid_adapter"] = "benchmark-service"
 
         result_json = json.dumps(benchmark_result, indent=2)
         get_task_manager().store_data(request.task_id, result_json, "json")
