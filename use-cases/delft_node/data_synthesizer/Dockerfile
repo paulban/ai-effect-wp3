@@ -14,7 +14,7 @@ COPY data_synthesizer/blueprint.json ./blueprint.json
 COPY data_synthesizer/dockerinfo.json ./dockerinfo.json
 
 RUN mkdir -p ./common/_generated && \
-	python -m grpc_tools.protoc -I./shared/proto --python_out=./common/_generated --grpc_python_out=./common/_generated ./shared/proto/common.proto ./shared/proto/data_synthesizer.proto
+	python -m grpc_tools.protoc -I./shared/proto --python_out=./common/_generated --grpc_python_out=./common/_generated ./shared/proto/data_synthesizer.proto
 
 ENV SELF_URL=http://synthetic-data:8080
 ENV HOST=0.0.0.0

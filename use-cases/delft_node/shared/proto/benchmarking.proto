@@ -1,7 +1,7 @@
 syntax = "proto3";
 package delft.benchmarking;
 
-import "common.proto";
+import "data_synthesizer.proto";
 
 enum BenchmarkInputKind {
   BENCHMARK_INPUT_KIND_UNSPECIFIED = 0;
@@ -40,8 +40,8 @@ message AlgorithmPayload {
 }
 
 message BenchmarkArtifacts {
-  delft.common.ArtifactReference topology = 1;
-  delft.common.ArtifactReference time_series = 2;
+  delft.data_synthesizer.ArtifactReference topology = 1;
+  delft.data_synthesizer.ArtifactReference time_series = 2;
   map<string, string> metadata = 10;
 }
 
@@ -50,7 +50,7 @@ message BenchmarkExecutionSpec {
   BenchmarkConfig config = 1;
   AlgorithmPayload algorithm = 2;
   BenchmarkInputKind input_kind = 3;
-  delft.common.GridData grid_data = 4;
+  delft.data_synthesizer.GridData grid_data = 4;
   BenchmarkArtifacts artifacts = 5;
   map<string, string> metadata = 10;
 }

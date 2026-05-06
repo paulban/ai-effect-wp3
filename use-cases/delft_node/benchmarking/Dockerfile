@@ -19,7 +19,7 @@ COPY benchmarking/dockerinfo.json /app/dockerinfo.json
 COPY benchmarking/run_workflow.sh /app/run_workflow.sh
 
 RUN mkdir -p /app/common/_generated && \
-    python -m grpc_tools.protoc -I/app/shared/proto --python_out=/app/common/_generated --grpc_python_out=/app/common/_generated /app/shared/proto/common.proto /app/shared/proto/data_synthesizer.proto /app/shared/proto/benchmarking.proto
+    python -m grpc_tools.protoc -I/app/shared/proto --python_out=/app/common/_generated --grpc_python_out=/app/common/_generated /app/shared/proto/data_synthesizer.proto /app/shared/proto/benchmarking.proto
 
 ENV GRPC_HOST=benchmark-runner
 ENV GRPC_PORT=50051

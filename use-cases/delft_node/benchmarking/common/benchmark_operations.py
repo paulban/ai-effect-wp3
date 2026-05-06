@@ -34,7 +34,7 @@ from .task_manager import get_task_manager
 
 logger = logging.getLogger(__name__)
 
-ensure_generated("common.proto", "data_synthesizer.proto", "benchmarking.proto")
+ensure_generated("data_synthesizer.proto", "benchmarking.proto")
 import benchmarking_pb2  # type: ignore  # noqa: E402
 import benchmarking_pb2_grpc  # type: ignore  # noqa: E402
 import data_synthesizer_pb2  # type: ignore  # noqa: E402

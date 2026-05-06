@@ -9,9 +9,9 @@ Pipeline:
 
 Handlers:
         - ConfigureGrid: Accept synthesis parameters and publish a
-            delft.common.GridSynthesisConfig artifact via GetGridConfig.
+            delft.data_synthesizer.GridSynthesisConfig artifact via GetGridConfig.
         - SynthesizeGrid: Consume GridSynthesisConfig, generate the grid, and publish
-            delft.common.GridData via GetGridData.
+            delft.data_synthesizer.GridData via GetGridData.
 
 Usage:
     from common import synth_handlers, run
@@ -57,8 +57,7 @@ from .task_manager import get_task_manager
 
 logger = logging.getLogger(__name__)
 
-ensure_generated("common.proto", "data_synthesizer.proto")
-import common_pb2  # type: ignore  # noqa: E402
+ensure_generated("data_synthesizer.proto")
 import data_synthesizer_pb2  # type: ignore  # noqa: E402
 import data_synthesizer_pb2_grpc  # type: ignore  # noqa: E402
 
@@ -83,15 +82,15 @@ DEFAULT_LOADING_LEVEL = "M"
 DEFAULT_REF_SYS_ID = 1
 
 _LOADING_LEVEL_TO_PROTO = {
-    "L": common_pb2.LOADING_LEVEL_LOW,
-    "M": common_pb2.LOADING_LEVEL_MEDIUM,
-    "H": common_pb2.LOADING_LEVEL_HIGH,
+    "L": data_synthesizer_pb2.LOADING_LEVEL_LOW,
+    "M": data_synthesizer_pb2.LOADING_LEVEL_MEDIUM,
+    "H": data_synthesizer_pb2.LOADING_LEVEL_HIGH,
 }
 
 _LOADING_LEVEL_FROM_PROTO = {
-    common_pb2.LOADING_LEVEL_LOW: "L",
-    common_pb2.LOADING_LEVEL_MEDIUM: "M",
-    common_pb2.LOADING_LEVEL_HIGH: "H",
+    data_synthesizer_pb2.LOADING_LEVEL_LOW: "L",
+    data_synthesizer_pb2.LOADING_LEVEL_MEDIUM: "M",
+    data_synthesizer_pb2.LOADING_LEVEL_HIGH: "H",
 }
 
 
@@ -221,7 +220,7 @@ def _parse_connection_key(key: Any) -> tuple[int, int]:
 
 def _loading_level_to_proto(value: str) -> int:
     return _LOADING_LEVEL_TO_PROTO.get(
-        str(value).upper(), common_pb2.LOADING_LEVEL_MEDIUM
+        str(value).upper(), data_synthesizer_pb2.LOADING_LEVEL_MEDIUM
     )
 
 
@@ -231,9 +230,9 @@ def _loading_level_from_proto(value: int) -> str:
 
 def _grid_config_to_proto(
     config_output: dict[str, Any],
-) -> common_pb2.GridSynthesisConfig:
+) -> data_synthesizer_pb2.GridSynthesisConfig:
     """Convert generated synthesis config payload to protobuf GridSynthesisConfig."""
-    config_msg = common_pb2.GridSynthesisConfig(
+    config_msg = data_synthesizer_pb2.GridSynthesisConfig(
         seed=int(config_output.get("seed", DEFAULT_SEED)),
         loading_level=_loading_level_to_proto(
             str(config_output.get("loading_level", DEFAULT_LOADING_LEVEL))
@@ -276,7 +275,7 @@ def _grid_config_to_proto(
 
 
 def _proto_grid_config_to_dict(
-    config_msg: common_pb2.GridSynthesisConfig,
+    config_msg: data_synthesizer_pb2.GridSynthesisConfig,
 ) -> dict[str, Any]:
     """Convert protobuf GridSynthesisConfig to dictionary used by synthesis logic."""
     transformer_degrees: dict[str, Any] = {
@@ -311,10 +310,10 @@ def _proto_grid_config_to_dict(
 def _grid_data_to_proto(
     output: dict[str, Any],
     config_output: dict[str, Any],
-) -> common_pb2.GridData:
+) -> data_synthesizer_pb2.GridData:
     """Map node-link JSON payload to protobuf GridData."""
     graph_data = output.get("graph_data", {})
-    topology = common_pb2.GridTopology(
+    topology = data_synthesizer_pb2.GridTopology(
         directed=bool(graph_data.get("directed", False)),
         multigraph=bool(graph_data.get("multigraph", False)),
     )
@@ -357,7 +356,7 @@ def _grid_data_to_proto(
             if key not in {"source", "target", "r", "x", "b", "snom", "thermal_limit"}:
                 edge_msg.metadata[str(key)] = str(value)
 
-    grid_data = common_pb2.GridData(
+    grid_data = data_synthesizer_pb2.GridData(
         grid_id="delft-synthesized-grid",
         topology=topology,
         seed=int(output.get("seed", DEFAULT_SEED)),

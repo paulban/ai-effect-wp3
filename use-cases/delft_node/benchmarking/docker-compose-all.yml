@@ -1,5 +1,6 @@
 services:
   benchmark-runner:
+    image: paulban/aieffect-dutchnode-benchmarking:latest
     build:
       context: ..
       dockerfile: benchmarking/Dockerfile

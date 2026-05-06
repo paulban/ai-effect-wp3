@@ -12,6 +12,7 @@
 
 services:
   synthetic-data:
+    image: paulban/aieffect-dutchnode-datasynth:latest
     build:
       context: ..
       dockerfile: data_synthesizer/Dockerfile
