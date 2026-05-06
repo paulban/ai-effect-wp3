@@ -5,11 +5,15 @@ This use case runs a canonical protobuf/gRPC benchmark pipeline for network topo
 ## MVP scope
 - Benchmark service compatible with AI-Effect control endpoints plus canonical gRPC data-plane artifacts.
 - Input payload includes:
-  - test case metadata (pandapower-formatted topology and time series metadata)
+  - optional benchmark scenario metadata (`env_name`, `topology`, `time_series`, `backend`)
   - algorithm code template payload
 - Algorithm submission model: Python file implementing build_agent(env, context).
 - Benchmark engine: grid2benchmark (public repository dependency).
 - KPI evaluation: delegated to grid2benchmark; results are serialized as canonical `BenchmarkRunResult` (structured scenarios + summary aggregates).
+- When upstream synthesized `GridData` is provided over gRPC and scenario file inputs are missing, this service materializes:
+  - pandapower topology (`grid.json`)
+  - csv time-series quantities (`prod_p`, `prod_v`, `load_p`, `load_q`, plus forecast variants)
+  and delegates full Grid2Op environment construction to grid2benchmark.
 - Packaging:
   - Docker use-case deployment
   - Python package via pyproject.toml
@@ -52,7 +56,7 @@ This use case runs a canonical protobuf/gRPC benchmark pipeline for network topo
 {
   "benchmark": {
     "max_steps": 100,
-    "kpis": ["survival", "latency"],
+    "kpis": ["carbon_intensity", "operation_score"],
     "scenarios": [
       {
         "env_name": "l2rpn_case14_sandbox",
@@ -67,7 +71,7 @@ This use case runs a canonical protobuf/gRPC benchmark pipeline for network topo
 {
   "benchmark": {
     "max_steps": 200,
-    "kpis": ["survival", "violations", "latency"],
+    "kpis": ["carbon_intensity", "operation_score", "topological_action_complexity"],
     "scenarios": [
       {
         "env_name": "l2rpn_case14_sandbox",
@@ -76,8 +80,8 @@ This use case runs a canonical protobuf/gRPC benchmark pipeline for network topo
           "path": "./data/grid.json"
         },
         "time_series": {
-          "format": "grid2op_chronics_dir",
-          "path": "./data/chronics"
+          "format": "csv",
+          "path": "./data/time_series_csv"
         },
         "time_series_ids": [0, 1, 2]
       },
@@ -97,12 +101,19 @@ This use case runs a canonical protobuf/gRPC benchmark pipeline for network topo
 - Aggregate metrics are in `result.structured.summary.aggregates`.
 - Scenario field names follow `grid2benchmark`: `env_name`, `time_series_ids`, `topology`, `time_series`, `backend`.
 
+## Supported scenario source formats
+- Topology formats: `pandapower`, `pypowsybl`, `cgmes`.
+- Time-series formats: `grid2op_chronics_dir`, `csv`, `parquet`.
+- For `csv`/`parquet` time-series, grid2benchmark performs conversion into a temporary Grid2Op-compatible environment.
+- For `grid2op_chronics_dir`, existing Grid2Op chronic directories can be consumed directly.
+
 ## Notes on dependencies
 - `requirements.txt` installs `grid2benchmark` from the public GitHub repository at branch `main`.
 - `requirements.txt` also installs `grid2evaluate` and a specific version of `grid2op` from GitHub because it is not currently published on PyPI.
 - `pyproject.toml` references `grid2benchmark` directly for package metadata.
+- Because `grid2benchmark` is installed from GitHub, Docker layer cache can pin older commits. Use a no-cache rebuild when validating newly added format support:
+  - `docker compose -f docker-compose-all.yml build --no-cache benchmark-runner`
 
 ## Next extension
-- give test grid and time series data as files for benchmarking
-- CGMES input converter layer.
+- add richer synthesized load/generator/time-series semantics so fewer fallback defaults are needed.
 - Strong isolation mode (subprocess or per-run container) for untrusted code.
