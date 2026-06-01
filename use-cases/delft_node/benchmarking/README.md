@@ -21,10 +21,19 @@ This use case runs a canonical protobuf/gRPC benchmark pipeline for network topo
 ## Key files
 - main.py: service entrypoint
 - common/benchmark_operations.py: RunBenchmark operation implementation
+- proto/benchmarking.proto: benchmark service protobuf contract (service-local)
 - algorithms/algorithm_template.py: user algorithm template
 - algorithms/greedy_baseline.py: baseline algorithm (generic no-op action policy)
 - blueprint.json and dockerinfo.json: orchestrator workflow metadata
 - run_workflow.sh: end-to-end orchestration run script
+
+## Protobuf layout and generation
+- Protobuf files are service-local (no `shared/proto` for Delft node service contracts):
+  - `benchmarking/proto/benchmarking.proto`
+  - `data_synthesizer/proto/data_synthesizer.proto`
+- Benchmark service generates python stubs from both proto roots because it serves `BenchmarkingService` and also consumes upstream `DataSynthesizerService` gRPC artifacts.
+- Data synthesizer generates python stubs from `data_synthesizer/proto` only.
+- Docker builds compile protobufs during image build; runtime fallback generation is implemented in `common/proto_runtime.py`.
 
 ## Run locally as service
 1. cd use-cases/delft_node/benchmarking
@@ -35,7 +44,7 @@ This use case runs a canonical protobuf/gRPC benchmark pipeline for network topo
 ## Run benchmark via orchestrator
 1. Start orchestrator stack from orchestrator/docker-compose.yml
 2. Start this benchmark service
-3. Run ./run_workflow.sh
+3. Run `./run_workflow.sh`
 
 ## Local example smoke test with baseline algorithm
 1. Start the service locally (or in Docker)

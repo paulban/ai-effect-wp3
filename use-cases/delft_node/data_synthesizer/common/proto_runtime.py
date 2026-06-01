@@ -6,10 +6,10 @@ from pathlib import Path
 
 
 def ensure_generated(*proto_files: str) -> Path:
-    """Compile shared proto files into a local generated module directory."""
+    """Compile service-local proto files into a local generated module directory."""
     common_dir = Path(__file__).resolve().parent
     service_root = common_dir.parent
-    shared_proto_dir = service_root / "shared" / "proto"
+    service_proto_dir = service_root / "proto"
     generated_dir = common_dir / "_generated"
     generated_dir.mkdir(parents=True, exist_ok=True)
 
@@ -38,10 +38,10 @@ def ensure_generated(*proto_files: str) -> Path:
 
     args = [
         "grpc_tools.protoc",
-        f"-I{shared_proto_dir}",
+        f"-I{service_proto_dir}",
         f"--python_out={generated_dir}",
         f"--grpc_python_out={generated_dir}",
-    ] + [str(shared_proto_dir / proto) for proto in proto_files]
+    ] + [str(service_proto_dir / proto) for proto in proto_files]
 
     rc = protoc.main(args)
     if rc != 0:

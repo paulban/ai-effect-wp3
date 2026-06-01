@@ -7,14 +7,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
 COPY data_synthesizer/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY shared/proto ./shared/proto
+COPY data_synthesizer/proto ./proto
 COPY data_synthesizer/common ./common
 COPY data_synthesizer/main.py ./main.py
 COPY data_synthesizer/blueprint.json ./blueprint.json
 COPY data_synthesizer/dockerinfo.json ./dockerinfo.json
 
 RUN mkdir -p ./common/_generated && \
-	python -m grpc_tools.protoc -I./shared/proto --python_out=./common/_generated --grpc_python_out=./common/_generated ./shared/proto/data_synthesizer.proto
+	python -m grpc_tools.protoc -I./proto --python_out=./common/_generated --grpc_python_out=./common/_generated ./proto/data_synthesizer.proto
 
 ENV SELF_URL=http://synthetic-data:8080
 ENV HOST=0.0.0.0
