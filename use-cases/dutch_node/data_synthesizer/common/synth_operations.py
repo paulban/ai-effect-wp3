@@ -29,6 +29,7 @@ import os
 import threading
 import uuid
 from concurrent import futures
+from pathlib import Path
 from typing import Any
 
 import grpc
@@ -380,64 +381,137 @@ def _proto_grid_config_to_dict(
     }
 
 
+_DEFAULT_VOLTAGE_BY_LEVEL: dict[int, float] = {
+    0: 220.0,
+    1: 110.0,
+    2: 20.0,
+    3: 10.0,
+}
+
+
+def _grid_to_pandapower_json(graph_data: dict[str, Any]) -> str:
+    """Convert a node-link graph dict (powergrid_synth output) to a pandapower
+    network and return it as a JSON string via pp.to_json().
+
+    This is the authoritative networkx → pandapower conversion.  The result is
+    stored verbatim in GridData.pandapower_json so the benchmark service can call
+    pp.from_json() directly without any lossy intermediate proto fields.
+    """
+    import pandapower as pp  # deferred: not available at module import time in tests
+
+    net = pp.create_empty_network(sn_mva=100.0)
+    bus_index_by_id: dict[str, int] = {}
+
+    for node in graph_data.get("nodes", []):
+        node_id = str(node.get("id", ""))
+        v_nom = float(node.get("v_nom", node.get("voltage", 0.0)) or 0.0)
+        if v_nom <= 0.0:
+            level = int(node.get("voltage_level", 0))
+            v_nom = _DEFAULT_VOLTAGE_BY_LEVEL.get(level, 110.0)
+        bus_idx = pp.create_bus(net, vn_kv=max(v_nom, 0.1), name=node_id)
+        bus_index_by_id[node_id] = int(bus_idx)
+
+    if not bus_index_by_id:
+        raise ValueError("Graph has no nodes – cannot create pandapower network")
+
+    slack_node_id = next(iter(bus_index_by_id))
+    created_loads = 0
+    created_gens = 0
+    total_load_p = 0.0
+
+    for node in graph_data.get("nodes", []):
+        node_id = str(node.get("id", ""))
+        bus_idx = bus_index_by_id[node_id]
+        bus_type = str(node.get("bus_type", "")).upper()
+        load_p = float(node.get("p_load", 0.0) or 0.0)
+        load_q = float(node.get("q_load", 0.0) or 0.0)
+        gen_p = float(node.get("p_set", 0.0) or 0.0)
+        gen_q = float(node.get("q_set", 0.0) or 0.0)
+
+        if bus_type == "REF":
+            slack_node_id = node_id
+
+        if load_p or load_q:
+            pp.create_load(net, bus_idx, p_mw=load_p, q_mvar=load_q, name=f"load_{node_id}")
+            created_loads += 1
+            total_load_p += load_p
+
+        if gen_p or gen_q:
+            pp.create_gen(
+                net, bus_idx, p_mw=max(gen_p, 0.1), vm_pu=1.0,
+                name=f"gen_{node_id}", type="thermal",
+            )
+            created_gens += 1
+
+    bus_ids = list(bus_index_by_id)
+    non_slack = [b for b in bus_ids if b != slack_node_id] or [slack_node_id]
+
+    while len(net.load) < max(created_loads, 1):
+        fb = non_slack[len(net.load) % len(non_slack)]
+        pp.create_load(net, bus_index_by_id[fb], p_mw=10.0, q_mvar=2.0,
+                       name=f"load_{fb}_{len(net.load)}")
+        total_load_p += 10.0
+
+    tgt_gen = max(created_gens, 1)
+    while len(net.gen) < tgt_gen:
+        fb = bus_ids[len(net.gen) % len(bus_ids)]
+        pp.create_gen(
+            net, bus_index_by_id[fb],
+            p_mw=max(total_load_p / tgt_gen, 10.0),
+            vm_pu=1.0, name=f"gen_{fb}_{len(net.gen)}", type="thermal",
+        )
+
+    pp.create_ext_grid(net, bus_index_by_id[slack_node_id], vm_pu=1.0,
+                       name=f"slack_{slack_node_id}")
+
+    for edge in graph_data.get("links", []):
+        src = str(edge.get("source", ""))
+        tgt = str(edge.get("target", ""))
+        from_bus = bus_index_by_id.get(src)
+        to_bus = bus_index_by_id.get(tgt)
+        if from_bus is None or to_bus is None or from_bus == to_bus:
+            continue
+        r_ohm = abs(float(edge.get("r", 0.0) or 0.0))
+        x_ohm = abs(float(edge.get("x", 0.0) or 0.0))
+        b_val = abs(float(edge.get("b", 0.0) or 0.0))
+        snom = float(edge.get("snom", edge.get("thermal_limit", 0.0)) or 0.0)
+        pp.create_line_from_parameters(
+            net, from_bus=from_bus, to_bus=to_bus, length_km=1.0,
+            r_ohm_per_km=max(r_ohm, 1e-6),
+            x_ohm_per_km=max(x_ohm, 1e-6),
+            c_nf_per_km=b_val * 1e3,
+            max_i_ka=snom if snom > 0 else 1.0,
+            name=f"line-{src}-{tgt}",
+        )
+
+    pp_json = pp.to_json(net)
+    if not isinstance(pp_json, str):
+        # Older pandapower versions return None when no filename given; fall back.
+        import tempfile
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as f:
+            pp.to_json(net, f.name)
+            tmp = f.name
+        pp_json = Path(tmp).read_text(encoding="utf-8")
+        Path(tmp).unlink(missing_ok=True)
+    return pp_json
+
+
 def _grid_data_to_proto(
     output: dict[str, Any],
     config_output: dict[str, Any],
+    pp_json: str,
 ) -> data_synthesizer_pb2.GridData:
-    """Map node-link JSON payload to protobuf GridData."""
-    graph_data = output.get("graph_data", {})
-    topology = data_synthesizer_pb2.GridTopology(
-        directed=bool(graph_data.get("directed", False)),
-        multigraph=bool(graph_data.get("multigraph", False)),
-    )
-
-    for node in graph_data.get("nodes", []):
-        node_msg = topology.nodes.add(
-            id=str(node.get("id", "")),
-            bus_type=str(node.get("bus_type", "")),
-            voltage=float(node.get("v_nom", node.get("voltage", 0.0)) or 0.0),
-            load_p=float(node.get("p_load", 0.0) or 0.0),
-            load_q=float(node.get("q_load", 0.0) or 0.0),
-            gen_p=float(node.get("p_set", 0.0) or 0.0),
-            gen_q=float(node.get("q_set", 0.0) or 0.0),
-        )
-        for key, value in node.items():
-            if key not in {
-                "id",
-                "bus_type",
-                "v_nom",
-                "voltage",
-                "p_load",
-                "q_load",
-                "p_set",
-                "q_set",
-            }:
-                node_msg.metadata[str(key)] = str(value)
-
-    for edge in graph_data.get("links", []):
-        edge_msg = topology.edges.add(
-            source=str(edge.get("source", "")),
-            target=str(edge.get("target", "")),
-            resistance=float(edge.get("r", 0.0) or 0.0),
-            reactance=float(edge.get("x", 0.0) or 0.0),
-            susceptance=float(edge.get("b", 0.0) or 0.0),
-            thermal_limit=float(
-                edge.get("snom", edge.get("thermal_limit", 0.0)) or 0.0
-            ),
-        )
-        for key, value in edge.items():
-            if key not in {"source", "target", "r", "x", "b", "snom", "thermal_limit"}:
-                edge_msg.metadata[str(key)] = str(value)
-
+    """Build a GridData proto from synthesis output carrying a pandapower JSON snapshot."""
     grid_data = data_synthesizer_pb2.GridData(
         grid_id="dutch-synthesized-grid",
-        topology=topology,
+        pandapower_json=pp_json,
         seed=int(output.get("seed", DEFAULT_SEED)),
         loading_level=str(output.get("loading_level", DEFAULT_LOADING_LEVEL)),
         ref_sys_id=int(output.get("ref_sys_id", DEFAULT_REF_SYS_ID)),
         source_config=_grid_config_to_proto(config_output),
     )
-
     grid_data.metadata["status"] = str(output.get("status", "success"))
     grid_data.metadata["nodes"] = str(output.get("nodes", 0))
     grid_data.metadata["edges"] = str(output.get("edges", 0))
@@ -673,14 +747,19 @@ def execute_SynthesizeGrid(request: ExecuteRequest) -> ExecuteResponse:
 
         output_json = json.dumps(output, default=_json_default)
 
-        # Store for HTTP serving
+        # Store node-link JSON for HTTP serving (test_pipeline, file-based tests)
         get_task_manager().store_data(request.task_id, output_json, "json")
+
+        # Convert to pandapower and store JSON in the gRPC proto.
+        # This is the authoritative format for inter-service data exchange.
+        logger.info("Converting synthesized grid to pandapower network...")
+        pp_json = _grid_to_pandapower_json(graph_data)
 
         with _cache_lock:
             _cached_grid_response = data_synthesizer_pb2.GetGridDataResponse(
                 success=True,
                 message="Synthesized grid available",
-                grid_data=_grid_data_to_proto(output, config),
+                grid_data=_grid_data_to_proto(output, config, pp_json),
             )
 
         logger.info(
