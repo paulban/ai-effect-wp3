@@ -41,7 +41,7 @@ import benchmarking_pb2_grpc  # type: ignore  # noqa: E402
 import data_synthesizer_pb2  # type: ignore  # noqa: E402
 import data_synthesizer_pb2_grpc  # type: ignore  # noqa: E402
 
-DEFAULT_ENV_NAME = "l2rpn_case14_sandbox"
+DEFAULT_ENV_NAME = "synthetic-grid-v0"
 DEFAULT_MAX_STEPS = 200
 
 REQUIRED_ALGORITHM_FUNCTION = "build_agent"
@@ -207,6 +207,26 @@ class BenchmarkConfig:
     @property
     def primary_env_name(self) -> str:
         return self.scenarios[0].env_name if self.scenarios else DEFAULT_ENV_NAME
+
+
+def _grid2op_env_name_from_grid_data(grid_data: Any) -> str:
+    """Resolve benchmark environment name from synthesized grid metadata.
+
+    Priority:
+      1. grid_data.metadata["grid2op_env_name"]
+      2. grid_data.metadata["benchmark_env_name"] (legacy key)
+      3. DEFAULT_ENV_NAME
+    """
+    metadata = getattr(grid_data, "metadata", None)
+    if metadata is not None:
+        env_name = str(metadata.get("grid2op_env_name", "")).strip()
+        if env_name:
+            return env_name
+        legacy_env_name = str(metadata.get("benchmark_env_name", "")).strip()
+        if legacy_env_name:
+            return legacy_env_name
+
+    return DEFAULT_ENV_NAME
 
 
 def _fetch_http_data(uri: str, timeout: float = 60.0) -> str:
@@ -846,38 +866,52 @@ def _adapt_grid_data_to_config(
         return _net
 
     adapted_scenarios: list[ScenarioConfig] = []
+    synth_env_name = _grid2op_env_name_from_grid_data(grid_data)
+
+    logger.info(
+        "Building fixed Grid2Op environment from synthesized grid: env_name=%s",
+        synth_env_name,
+    )
     for index, scenario in enumerate(config.scenarios):
         scenario_dir = work_dir / f"scenario_{index}"
         scenario_dir.mkdir(parents=True, exist_ok=True)
 
-        topology = scenario.topology
-        time_series = scenario.time_series
+        # Always materialise topology/time-series from synthesized grid data.
+        # This enforces benchmarking on the environment produced by data_synthesizer.
+        topology_path = scenario_dir / "grid.json"
+        topology_path.write_text(pp_json, encoding="utf-8")
+        topology = TopologySourceConfig(
+            format="pandapower",
+            path=str(topology_path),
+        )
 
-        if topology is None:
-            # Write the pandapower JSON blob straight to disk - no conversion needed.
-            topology_path = scenario_dir / "grid.json"
-            topology_path.write_text(pp_json, encoding="utf-8")
-            topology = TopologySourceConfig(
-                format="pandapower",
-                path=str(topology_path),
+        time_series_path = _create_csv_time_series_from_net(_get_net(), scenario_dir)
+        time_series = TimeSeriesSourceConfig(
+            format="csv",
+            path=str(time_series_path),
+        )
+
+        if scenario.topology is not None or scenario.time_series is not None:
+            logger.warning(
+                "Ignoring user-provided topology/time_series for scenario %s; "
+                "using synthesized grid artifacts instead.",
+                index,
             )
 
-        if time_series is None:
-            time_series_path = _create_csv_time_series_from_net(
-                _get_net(), scenario_dir
-            )
-            time_series = TimeSeriesSourceConfig(
-                format="csv",
-                path=str(time_series_path),
+        if scenario.env_name != synth_env_name:
+            logger.warning(
+                "Overriding scenario env_name '%s' with synthesized env '%s'",
+                scenario.env_name,
+                synth_env_name,
             )
 
         adapted_scenarios.append(
             ScenarioConfig(
-                env_name=scenario.env_name,
+                env_name=synth_env_name,
                 time_series_ids=scenario.time_series_ids,
                 topology=topology,
                 time_series=time_series,
-                backend=scenario.backend,
+                backend=scenario.backend or "pandapower",
             )
         )
 

@@ -10,10 +10,7 @@ This use case runs a canonical protobuf/gRPC benchmark pipeline for network topo
 - Algorithm submission model: Python file implementing build_agent(env, context).
 - Benchmark engine: grid2benchmark (public repository dependency).
 - KPI evaluation: delegated to grid2benchmark; results are serialized as canonical `BenchmarkRunResult` (structured scenarios + summary aggregates).
-- When upstream synthesized `GridData` is provided over gRPC and scenario file inputs are missing, this service materializes:
-  - pandapower topology (`grid.json`)
-  - csv time-series quantities (`prod_p`, `prod_v`, `load_p`, `load_q`, plus forecast variants)
-  and delegates full Grid2Op environment construction to grid2benchmark.
+- When upstream synthesized `GridData` is provided over gRPC, this service treats `GridData.pandapower_json` as the authoritative network snapshot, writes it to `grid.json`, materializes fallback csv time-series quantities (`prod_p`, `prod_v`, `load_p`, `load_q`, plus forecast variants), and delegates full Grid2Op environment construction to grid2benchmark.
 - Packaging:
   - Docker use-case deployment
   - Python package via pyproject.toml
@@ -32,6 +29,7 @@ This use case runs a canonical protobuf/gRPC benchmark pipeline for network topo
   - `benchmarking/proto/benchmarking.proto`
   - `data_synthesizer/proto/data_synthesizer.proto`
 - Benchmark service generates python stubs from both proto roots because it serves `BenchmarkingService` and also consumes upstream `DataSynthesizerService` gRPC artifacts.
+  - The benchmark service's local `GridData` message mirrors the synth contract and carries `pandapower_json` instead of embedded topology/time-series message trees.
 - Data synthesizer generates python stubs from `data_synthesizer/proto` only.
 - Docker builds compile protobufs during image build; runtime fallback generation is implemented in `common/proto_runtime.py`.
 
@@ -64,17 +62,14 @@ sequenceDiagram
   participant G2O as Grid2Op
 
   U->>O: Create workflow + execute steps
-  O->>DS: /control/execute ConfigureGrid
-  DS-->>O: task_id + status
-
-  O->>DS: /control/execute SynthesizeGrid
+  O->>DS: /control/execute ConfigureAndSynthesize
   DS-->>O: task_id + status
 
   O->>BM: /control/execute RunBenchmark
   BM->>DS: gRPC GetGridData()
-  DS-->>BM: GridData (topology + time-series)
+  DS-->>BM: GridData (pandapower_json + metadata)
 
-  BM->>G2B: Build benchmark config/sources
+  BM->>G2B: Write grid.json + fallback CSV chronics
   G2B->>G2O: Build Grid2Op env and run episodes
   G2O-->>G2B: scenario KPIs/results
   G2B-->>BM: BenchmarkRunResult

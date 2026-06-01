@@ -82,6 +82,7 @@ DEFAULT_CONNECTION_SPECS = {
 DEFAULT_SEED = 42
 DEFAULT_LOADING_LEVEL = "M"
 DEFAULT_REF_SYS_ID = 1
+DEFAULT_GRID2OP_ENV_NAME = "synthetic-grid-v0"
 
 _LOADING_LEVEL_TO_PROTO = {
     "L": data_synthesizer_pb2.LOADING_LEVEL_LOW,
@@ -94,6 +95,11 @@ _LOADING_LEVEL_FROM_PROTO = {
     data_synthesizer_pb2.LOADING_LEVEL_MEDIUM: "M",
     data_synthesizer_pb2.LOADING_LEVEL_HIGH: "H",
 }
+
+
+def _grid2op_env_name(_: int) -> str:
+    """Return the fixed synthesized Grid2Op environment name."""
+    return DEFAULT_GRID2OP_ENV_NAME
 
 
 class DataSynthesizerServicer(data_synthesizer_pb2_grpc.DataSynthesizerServiceServicer):
@@ -515,6 +521,9 @@ def _grid_data_to_proto(
     grid_data.metadata["status"] = str(output.get("status", "success"))
     grid_data.metadata["nodes"] = str(output.get("nodes", 0))
     grid_data.metadata["edges"] = str(output.get("edges", 0))
+    grid_data.metadata["grid2op_env_name"] = str(
+        output.get("benchmark_env_name", DEFAULT_GRID2OP_ENV_NAME)
+    )
     return grid_data
 
 
@@ -742,6 +751,7 @@ def execute_SynthesizeGrid(request: ExecuteRequest) -> ExecuteResponse:
             "seed": seed,
             "loading_level": loading_level,
             "ref_sys_id": ref_sys_id,
+            "benchmark_env_name": _grid2op_env_name(int(ref_sys_id)),
             "graph_data": graph_data,
         }
 
