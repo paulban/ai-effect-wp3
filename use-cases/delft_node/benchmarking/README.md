@@ -46,6 +46,45 @@ This use case runs a canonical protobuf/gRPC benchmark pipeline for network topo
 2. Start this benchmark service
 3. Run `./run_workflow.sh`
 
+## Unified designer/runtime topology
+- The canonical `blueprint.json` and `dockerinfo.json` now use one synthesizer node (`grid_synth_service`) for all environments (including AI-on-Demand designer flows).
+- Synth stage runs via combined operation:
+  - `ConfigureAndSynthesize` (implemented in `data_synthesizer/common/synth_operations.py`)
+- This avoids maintaining parallel metadata variants while preserving deterministic execution (`ConfigureGrid` then `SynthesizeGrid` internally).
+
+## Delft node sequence diagram
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as User/Script
+  participant O as Orchestrator
+  participant DS as Data Synthesizer
+  participant BM as Benchmarking
+  participant G2B as grid2benchmark
+  participant G2O as Grid2Op
+
+  U->>O: Create workflow + execute steps
+  O->>DS: /control/execute ConfigureGrid
+  DS-->>O: task_id + status
+
+  O->>DS: /control/execute SynthesizeGrid
+  DS-->>O: task_id + status
+
+  O->>BM: /control/execute RunBenchmark
+  BM->>DS: gRPC GetGridData()
+  DS-->>BM: GridData (topology + time-series)
+
+  BM->>G2B: Build benchmark config/sources
+  G2B->>G2O: Build Grid2Op env and run episodes
+  G2O-->>G2B: scenario KPIs/results
+  G2B-->>BM: BenchmarkRunResult
+  BM-->>O: task completion + DataReference
+
+  O->>BM: gRPC GetBenchmarkResult()
+  BM-->>O: GetBenchmarkResultResponse
+  O-->>U: Workflow status + outputs
+```
+
 ## Local example smoke test with baseline algorithm
 1. Start the service locally (or in Docker)
 2. From this folder, run:

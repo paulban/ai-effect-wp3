@@ -3,10 +3,65 @@
 
 set -e
 
-# Ensure jq is available (winget installs it as 'jqlang')
-if ! command -v jq &>/dev/null && command -v jqlang &>/dev/null; then
-    jq() { jqlang "$@"; }
+# Resolve optional JSON CLI tooling
+JQ_BIN=""
+if command -v jq &>/dev/null; then
+  JQ_BIN="jq"
+elif command -v jqlang &>/dev/null; then
+  JQ_BIN="jqlang"
 fi
+
+json_pretty_print() {
+  local payload="$1"
+  if [ -n "$JQ_BIN" ]; then
+    echo "$payload" | "$JQ_BIN" '.' 2>/dev/null || echo "$payload"
+    return
+  fi
+
+  if command -v python3 &>/dev/null; then
+    printf "%s" "$payload" | python3 -c 'import json,sys
+s=sys.stdin.read()
+try:
+    print(json.dumps(json.loads(s), indent=2))
+except Exception:
+    print(s)'
+    return
+  fi
+
+  if command -v python &>/dev/null; then
+    printf "%s" "$payload" | python -c 'import json,sys
+s=sys.stdin.read()
+try:
+    print(json.dumps(json.loads(s), indent=2))
+except Exception:
+    print(s)'
+    return
+  fi
+
+  echo "$payload"
+}
+
+json_get_field() {
+  local payload="$1"
+  local field="$2"
+
+  if [ -n "$JQ_BIN" ]; then
+    echo "$payload" | "$JQ_BIN" -r ".$field // empty" 2>/dev/null
+    return
+  fi
+
+  if command -v python3 &>/dev/null; then
+    printf "%s" "$payload" | python3 -c "import json,sys; d=json.load(sys.stdin); v=d.get('$field',''); print(v if isinstance(v,(str,int,float,bool)) else '')" 2>/dev/null
+    return
+  fi
+
+  if command -v python &>/dev/null; then
+    printf "%s" "$payload" | python -c "import json,sys; d=json.load(sys.stdin); v=d.get('$field',''); print(v if isinstance(v,(str,int,float,bool)) else '')" 2>/dev/null
+    return
+  fi
+
+  echo "$payload" | sed -n "s/.*\"$field\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -n 1
+}
 
 ORCHESTRATOR_URL="http://localhost:18000"
 SYNTH_SERVICE_URL="http://localhost:8003"
@@ -86,8 +141,8 @@ RESPONSE=$(curl -s -X POST "$ORCHESTRATOR_URL/workflows" \
   -H "Content-Type: application/json" \
   -d "$PAYLOAD")
 
-echo "$RESPONSE" | jq '.' 2>/dev/null || echo "$RESPONSE"
-WORKFLOW_ID=$(echo "$RESPONSE" | jq -r '.workflow_id' 2>/dev/null)
+json_pretty_print "$RESPONSE"
+WORKFLOW_ID=$(json_get_field "$RESPONSE" "workflow_id")
 
 if [ -z "$WORKFLOW_ID" ] || [ "$WORKFLOW_ID" = "null" ]; then
   echo "Failed to create workflow"
@@ -99,17 +154,17 @@ echo "Workflow ID: $WORKFLOW_ID"
 POLL_COUNT=0
 while [ $POLL_COUNT -lt $MAX_POLLS ]; do
   STATUS_RESPONSE=$(curl -s "$ORCHESTRATOR_URL/workflows/$WORKFLOW_ID")
-  STATUS=$(echo "$STATUS_RESPONSE" | jq -r '.status' 2>/dev/null)
+  STATUS=$(json_get_field "$STATUS_RESPONSE" "status")
 
   case "$STATUS" in
     completed|COMPLETED)
       echo "Workflow completed"
-      echo "$STATUS_RESPONSE" | jq '.' 2>/dev/null || echo "$STATUS_RESPONSE"
+      json_pretty_print "$STATUS_RESPONSE"
       break
       ;;
     failed|FAILED|error|ERROR)
       echo "Workflow failed"
-      echo "$STATUS_RESPONSE" | jq '.' 2>/dev/null || echo "$STATUS_RESPONSE"
+      json_pretty_print "$STATUS_RESPONSE"
       exit 1
       ;;
     *)
@@ -128,4 +183,4 @@ fi
 echo ""
 echo "Task outputs:"
 TASKS_RESPONSE=$(curl -s "$ORCHESTRATOR_URL/workflows/$WORKFLOW_ID/tasks")
-echo "$TASKS_RESPONSE" | jq '.' 2>/dev/null || echo "$TASKS_RESPONSE"
+json_pretty_print "$TASKS_RESPONSE"

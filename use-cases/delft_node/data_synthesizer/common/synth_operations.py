@@ -632,6 +632,37 @@ def execute_SynthesizeGrid(request: ExecuteRequest) -> ExecuteResponse:
         return ExecuteResponse(status="failed", error=str(e))
 
 
+def execute_ConfigureAndSynthesize(request: ExecuteRequest) -> ExecuteResponse:
+    """Run ConfigureGrid and SynthesizeGrid in one control-plane operation.
+
+    This operation is intended for workflow designers that cannot reliably model
+    two logical nodes backed by the same physical synthesizer service endpoint.
+    It preserves existing behavior by running ConfigureGrid first and then
+    invoking SynthesizeGrid with the generated gRPC data reference.
+    """
+    configure_response = execute_ConfigureGrid(request)
+    if configure_response.status != "complete" or configure_response.output is None:
+        return ExecuteResponse(
+            status="failed",
+            error=configure_response.error
+            or "ConfigureGrid failed during ConfigureAndSynthesize",
+        )
+
+    synth_request = ExecuteRequest(
+        method="SynthesizeGrid",
+        workflow_id=request.workflow_id,
+        task_id=request.task_id,
+        inputs=[
+            {
+                "protocol": configure_response.output.protocol,
+                "uri": configure_response.output.uri,
+                "format": configure_response.output.format,
+            }
+        ],
+    )
+    return execute_SynthesizeGrid(synth_request)
+
+
 def _json_default(obj):
     """JSON serializer for numpy types."""
     import numpy as np
@@ -652,4 +683,5 @@ def _json_default(obj):
 synth_handlers = {
     "ConfigureGrid": execute_ConfigureGrid,
     "SynthesizeGrid": execute_SynthesizeGrid,
+    "ConfigureAndSynthesize": execute_ConfigureAndSynthesize,
 }
