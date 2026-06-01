@@ -11,6 +11,7 @@ and zips it for upload:
             benchmarking.proto
 
     ai4eu_pipeline_package.zip          ← upload this file
+    
 
 Sources are always read from the live workspace files so the package stays in
 sync with code changes.  The output folder and zip are written to
