@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "delft-grid-benchmark"
+name = "dutch-grid-benchmark"
 version = "0.1.0"
-description = "Delft Node Grid2Benchmark benchmarking use case"
+description = "Dutch Node Grid2Benchmark benchmarking use case"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi==0.115.6",
@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-delft-grid-benchmark = "benchmark_cli:main"
+dutch-grid-benchmark = "benchmark_cli:main"
 
 [tool.setuptools]
 py-modules = ["main", "benchmark_cli"]

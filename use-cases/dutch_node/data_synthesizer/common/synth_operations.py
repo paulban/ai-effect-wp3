@@ -9,9 +9,9 @@ Pipeline:
 
 Handlers:
         - ConfigureGrid: Accept synthesis parameters and publish a
-            delft.data_synthesizer.GridSynthesisConfig artifact via GetGridConfig.
+            dutch.data_synthesizer.GridSynthesisConfig artifact via GetGridConfig.
         - SynthesizeGrid: Consume GridSynthesisConfig, generate the grid, and publish
-            delft.data_synthesizer.GridData via GetGridData.
+            dutch.data_synthesizer.GridData via GetGridData.
 
 Usage:
     from common import synth_handlers, run
@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import threading
+import uuid
 from concurrent import futures
 from typing import Any
 
@@ -96,6 +97,78 @@ _LOADING_LEVEL_FROM_PROTO = {
 
 class DataSynthesizerServicer(data_synthesizer_pb2_grpc.DataSynthesizerServiceServicer):
     """gRPC servicer exposing synthesized config and grid artifacts."""
+
+    def ConfigureAndSynthesize(self, request, context):
+        params: dict[str, Any] = {}
+
+        if request.level_specs:
+            params["level_specs"] = [
+                {
+                    "n": int(spec.n),
+                    "avg_k": float(spec.avg_k),
+                    "diam": int(spec.diam),
+                    "dist_type": str(spec.dist_type),
+                    "max_k": int(spec.max_k),
+                }
+                for spec in request.level_specs
+            ]
+
+        if request.connections:
+            params["connection_specs"] = {
+                str((int(conn.from_level), int(conn.to_level))): {
+                    "type": str(conn.type),
+                    "c": float(conn.c),
+                    "gamma": float(conn.gamma),
+                }
+                for conn in request.connections
+            }
+
+        if int(request.seed) > 0:
+            params["seed"] = int(request.seed)
+
+        if request.loading_level != data_synthesizer_pb2.LOADING_LEVEL_UNSPECIFIED:
+            params["loading_level"] = _loading_level_from_proto(request.loading_level)
+
+        if int(request.ref_sys_id) > 0:
+            params["ref_sys_id"] = int(request.ref_sys_id)
+
+        inline_payload = base64.b64encode(
+            json.dumps(params).encode("utf-8")
+        ).decode("utf-8")
+        execute_request = ExecuteRequest(
+            method="ConfigureAndSynthesize",
+            workflow_id="grpc",
+            task_id=f"grpc-{uuid.uuid4().hex}",
+            inputs=[
+                {
+                    "protocol": "inline",
+                    "uri": inline_payload,
+                    "format": "json",
+                }
+            ],
+        )
+
+        execute_response = execute_ConfigureAndSynthesize(execute_request)
+        if execute_response.status != "complete":
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(
+                execute_response.error or "ConfigureAndSynthesize failed"
+            )
+            return data_synthesizer_pb2.GetGridDataResponse(
+                success=False,
+                message=execute_response.error
+                or "ConfigureAndSynthesize failed",
+            )
+
+        with _cache_lock:
+            if _cached_grid_response is None:
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                context.set_details("No synthesized grid available")
+                return data_synthesizer_pb2.GetGridDataResponse(
+                    success=False,
+                    message="No synthesized grid available",
+                )
+            return _cached_grid_response
 
     def GetGridConfig(self, request, context):
         with _cache_lock:
@@ -357,7 +430,7 @@ def _grid_data_to_proto(
                 edge_msg.metadata[str(key)] = str(value)
 
     grid_data = data_synthesizer_pb2.GridData(
-        grid_id="delft-synthesized-grid",
+        grid_id="dutch-synthesized-grid",
         topology=topology,
         seed=int(output.get("seed", DEFAULT_SEED)),
         loading_level=str(output.get("loading_level", DEFAULT_LOADING_LEVEL)),

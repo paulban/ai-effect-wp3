@@ -1,4 +1,4 @@
-# Delft Node Benchmarking Use Case (Grid2Benchmark)
+# Dutch Node Benchmarking Use Case (Grid2Benchmark)
 
 This use case runs a canonical protobuf/gRPC benchmark pipeline for network topology optimization algorithms.
 
@@ -28,7 +28,7 @@ This use case runs a canonical protobuf/gRPC benchmark pipeline for network topo
 - run_workflow.sh: end-to-end orchestration run script
 
 ## Protobuf layout and generation
-- Protobuf files are service-local (no `shared/proto` for Delft node service contracts):
+- Protobuf files are service-local (no `shared/proto` for Dutch node service contracts):
   - `benchmarking/proto/benchmarking.proto`
   - `data_synthesizer/proto/data_synthesizer.proto`
 - Benchmark service generates python stubs from both proto roots because it serves `BenchmarkingService` and also consumes upstream `DataSynthesizerService` gRPC artifacts.
@@ -36,7 +36,7 @@ This use case runs a canonical protobuf/gRPC benchmark pipeline for network topo
 - Docker builds compile protobufs during image build; runtime fallback generation is implemented in `common/proto_runtime.py`.
 
 ## Run locally as service
-1. cd use-cases/delft_node/benchmarking
+1. cd use-cases/dutch_node/benchmarking
 2. docker network create ai-effect-services || true
 3. docker compose -f docker-compose-all.yml up -d --build
 4. curl http://localhost:8004/health
@@ -52,7 +52,7 @@ This use case runs a canonical protobuf/gRPC benchmark pipeline for network topo
   - `ConfigureAndSynthesize` (implemented in `data_synthesizer/common/synth_operations.py`)
 - This avoids maintaining parallel metadata variants while preserving deterministic execution (`ConfigureGrid` then `SynthesizeGrid` internally).
 
-## Delft node sequence diagram
+## Dutch node sequence diagram
 ```mermaid
 sequenceDiagram
   autonumber

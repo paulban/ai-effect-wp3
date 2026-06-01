@@ -1,5 +1,5 @@
 #!/bin/bash
-# Delft Node – Synthetic Power Grid workflow via AI-Effect Orchestrator
+# Dutch Node – Synthetic Power Grid workflow via AI-Effect Orchestrator
  
 set +e
 
@@ -15,7 +15,7 @@ POLL_INTERVAL=3
 MAX_POLLS=60
  
 echo "=========================================="
-echo "Delft Node – Synthetic Power Grid Pipeline"
+echo "Dutch Node – Synthetic Power Grid Pipeline"
 echo "=========================================="
 echo ""
  
@@ -59,7 +59,7 @@ echo ""
 echo "Testing: Synthetic Power Grid Service"
 echo "URL: $SERVICE_URL/health"
 if ! test_endpoint "Synthetic Power Grid" "$SERVICE_URL/health"; then
-    echo "Start the service first:  cd use-cases/delft_node && docker compose -f docker-compose-all.yml up -d --build"
+    echo "Start the service first:  cd use-cases/dutch_node && docker compose -f docker-compose-all.yml up -d --build"
     exit 1
 fi
 echo ""

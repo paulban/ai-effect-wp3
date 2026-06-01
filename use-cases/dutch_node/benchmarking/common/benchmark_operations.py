@@ -1,6 +1,6 @@
 """Grid2Benchmark operations for AI-Effect orchestration.
 
-RunBenchmark consumes canonical protobuf/gRPC inputs from the Delft data plane and
+RunBenchmark consumes canonical protobuf/gRPC inputs from the Dutch data plane and
 publishes canonical structured benchmark protobuf results.
 """
 
@@ -14,6 +14,7 @@ import logging
 import os
 import tempfile
 import threading
+import uuid
 from concurrent import futures
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +52,105 @@ _cached_result_response: benchmarking_pb2.GetBenchmarkResultResponse | None = No
 
 class BenchmarkingServicer(benchmarking_pb2_grpc.BenchmarkingServiceServicer):
     """gRPC servicer exposing cached benchmark results."""
+
+    def RunBenchmark(self, request, context):
+        benchmark_payload: dict[str, Any] = {
+            "max_steps": int(request.config.max_steps or DEFAULT_MAX_STEPS),
+            "scenarios": [
+                    {
+                        "env_name": str(scenario.env_name),
+                        "time_series_ids": [
+                            int(time_series_id)
+                            for time_series_id in scenario.time_series_ids
+                        ],
+                        "backend": str(scenario.backend)
+                        if str(scenario.backend)
+                        else None,
+                        "topology": {
+                            "format": str(scenario.topology.format),
+                            "path": str(scenario.topology.path),
+                        }
+                        if str(scenario.topology.format)
+                        and str(scenario.topology.path)
+                        else None,
+                        "time_series": {
+                            "format": str(scenario.time_series.format),
+                            "path": str(scenario.time_series.path),
+                        }
+                        if str(scenario.time_series.format)
+                        and str(scenario.time_series.path)
+                        else None,
+                    }
+                    for scenario in request.config.scenarios
+                ],
+        }
+
+        if request.config.kpis:
+            benchmark_payload["kpis"] = [str(kpi) for kpi in request.config.kpis]
+
+        payload: dict[str, Any] = {
+            "benchmark": benchmark_payload,
+            "algorithm": {},
+        }
+
+        payload["benchmark"]["scenarios"] = [
+            {
+                key: value
+                for key, value in scenario.items()
+                if value is not None
+            }
+            for scenario in payload["benchmark"]["scenarios"]
+        ]
+
+        if request.algorithm.source_bytes:
+            payload["algorithm"]["source_b64"] = base64.b64encode(
+                bytes(request.algorithm.source_bytes)
+            ).decode("utf-8")
+        elif str(request.algorithm.source_uri):
+            payload["algorithm"]["source_uri"] = str(request.algorithm.source_uri)
+
+        if not payload["benchmark"]["scenarios"]:
+            payload["benchmark"]["scenarios"] = [
+                {
+                    "env_name": DEFAULT_ENV_NAME,
+                    "time_series_ids": [0],
+                }
+            ]
+
+        inline_payload = base64.b64encode(
+            json.dumps(payload).encode("utf-8")
+        ).decode("utf-8")
+        execute_request = ExecuteRequest(
+            method="RunBenchmark",
+            workflow_id="grpc",
+            task_id=f"grpc-{uuid.uuid4().hex}",
+            inputs=[
+                {
+                    "protocol": "inline",
+                    "uri": inline_payload,
+                    "format": "json",
+                }
+            ],
+        )
+
+        execute_response = execute_RunBenchmark(execute_request)
+        if execute_response.status != "complete":
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(execute_response.error or "RunBenchmark failed")
+            return benchmarking_pb2.GetBenchmarkResultResponse(
+                success=False,
+                message=execute_response.error or "RunBenchmark failed",
+            )
+
+        with _cache_lock:
+            if _cached_result_response is None:
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                context.set_details("No benchmark result available")
+                return benchmarking_pb2.GetBenchmarkResultResponse(
+                    success=False,
+                    message="No benchmark result available",
+                )
+            return _cached_result_response
 
     def GetBenchmarkResult(self, request, context):
         with _cache_lock:

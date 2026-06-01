@@ -1,6 +1,6 @@
 {
-  "name": "Delft Synth + Benchmark Pipeline",
-  "pipeline_id": "delft-synth-benchmark-001",
+  "name": "Dutch Synth + Benchmark Pipeline",
+  "pipeline_id": "dutch-synth-benchmark-001",
   "creation_date": "2026-05-05",
   "type": "pipeline-topology/v2",
   "version": "2.1",
@@ -30,7 +30,7 @@
     {
       "container_name": "benchmark-runner",
       "proto_uri": "benchmarking.proto",
-      "image": "delft-benchmark-runner:latest",
+      "image": "dutch-benchmark-runner:latest",
       "node_type": "MLModel",
       "operation_signature_list": [
         {

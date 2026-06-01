@@ -1,5 +1,5 @@
 syntax = "proto3";
-package delft.benchmarking;
+package dutch.benchmarking;
 
 enum LoadingLevel {
   LOADING_LEVEL_UNSPECIFIED = 0;
@@ -238,5 +238,6 @@ message GetBenchmarkResultResponse {
 }
 
 service BenchmarkingService {
+  rpc RunBenchmark(BenchmarkExecutionSpec) returns (GetBenchmarkResultResponse);
   rpc GetBenchmarkResult(GetBenchmarkResultRequest) returns (GetBenchmarkResultResponse);
 }

@@ -13,7 +13,7 @@ from common.control_interface import ExecuteRequest
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run Delft Grid2Benchmark benchmark locally"
+        description="Run Dutch Grid2Benchmark benchmark locally"
     )
     parser.add_argument("--algorithm", required=True, help="Path to algorithm .py file")
     parser.add_argument(

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Delft Node benchmark workflow submission
+# Dutch Node benchmark workflow submission
 
 set -e
 

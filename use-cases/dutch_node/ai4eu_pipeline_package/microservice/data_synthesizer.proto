@@ -1,5 +1,5 @@
 syntax = "proto3";
-package delft.data_synthesizer;
+package dutch.data_synthesizer;
 
 enum LoadingLevel {
   LOADING_LEVEL_UNSPECIFIED = 0;
@@ -140,6 +140,7 @@ message GetGridDataResponse {
 }
 
 service DataSynthesizerService {
+  rpc ConfigureAndSynthesize(GridSynthesisRequest) returns (GetGridDataResponse);
   rpc GetGridConfig(GetGridConfigRequest) returns (GetGridConfigResponse);
   rpc GetGridData(GetGridDataRequest) returns (GetGridDataResponse);
   rpc GetSynthesizedGrid(GetGridDataRequest) returns (GetGridDataResponse);

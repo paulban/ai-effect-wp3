@@ -1,4 +1,4 @@
-"""Template for Delft benchmark algorithms.
+"""Template for Dutch benchmark algorithms.
 
 Implement build_agent(env, context) and the agent act(observation) method.
 The benchmark runner imports this file dynamically.
