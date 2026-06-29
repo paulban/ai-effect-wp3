@@ -60,7 +60,8 @@ message StartSessionResponse {
   bool   success    = 1;
   string message    = 2;
   string session_id = 3;  // stable identifier for this session
-  string gui_url    = 4;  // browser URL the operator accesses
+  string gui_url    = 4;  // browser URL for the InteractiveAI grid simulation
+  string survey_url = 5;  // browser URL for the hmisurveys questionnaire (separate container)
 }
 
 message SessionStatusRequest {
@@ -115,7 +116,8 @@ message SessionResultResponse {
 // ---------------------------------------------------------------------------
 service HumanAIInteractionTestingService {
   // Start a new human-AI interaction testing session.
-  // Returns immediately with session_id and gui_url; the session runs async.
+  // Launches InteractiveAI and hmisurveys as separate containers.
+  // Returns immediately with session_id, gui_url, and survey_url; the session runs async.
   rpc StartHumanAISession(HumanAISessionSpec)    returns (StartSessionResponse);
 
   // Poll the phase of a running session.

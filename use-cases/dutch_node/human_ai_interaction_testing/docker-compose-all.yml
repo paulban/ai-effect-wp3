@@ -14,15 +14,25 @@ services:
       - SELF_URL=http://hai-testing-service:8080
       - GRPC_HOST=hai-testing-service
       - GRPC_PORT=50051
-      # Docker image to use for InteractiveAI sessions.
-      # TODO (OQ-4): Replace with the confirmed InteractiveAI image name/tag.
+      # --- InteractiveAI container ---
+      # Docker image for the InteractiveAI grid simulation GUI.
+      # TODO (OQ-4): Build locally from AI4REALNET/InteractiveAI and set this.
       - HAI_INTERACTIVE_AI_IMAGE=${HAI_INTERACTIVE_AI_IMAGE:-interactiveai:latest}
-      # Port on the host where the InteractiveAI GUI will be served.
-      # TODO (OQ-5): Confirm the default port with AI4REALNET.
+      # Host port where the InteractiveAI web-app will be served.
+      # TODO (OQ-5): Confirm the correct port by running InteractiveAI locally.
       - HAI_INTERACTIVE_AI_PORT=${HAI_INTERACTIVE_AI_PORT:-8090}
-      # URL that the human operator opens in their browser.
-      # On Linux: replace host.docker.internal with the host machine IP.
+      # URL returned as gui_url. On Linux: replace host.docker.internal with host IP.
       - HAI_GUI_BASE_URL=${HAI_GUI_BASE_URL:-http://host.docker.internal:8090}
+      # --- hmisurveys container ---
+      # Docker image for the hmisurveys survey UI.
+      # TODO (OQ-4): Build locally from AI4REALNET/hmisurveys and set this.
+      - HAI_HMISURVEYS_IMAGE=${HAI_HMISURVEYS_IMAGE:-hmisurveys:latest}
+      # Host port where the hmisurveys survey UI will be served.
+      # TODO (OQ-7): Confirm the correct port by running hmisurveys locally.
+      - HAI_HMISURVEYS_PORT=${HAI_HMISURVEYS_PORT:-8091}
+      # URL returned as survey_url. On Linux: replace host.docker.internal with host IP.
+      - HAI_SURVEY_BASE_URL=${HAI_SURVEY_BASE_URL:-http://host.docker.internal:8091}
+      # --- Shared results directory ---
       # Host-absolute path for per-session result directories.
       # Must match the left side of the volume mount below.
       - HAI_RESULTS_HOST_PATH=${HAI_RESULTS_HOST_PATH:-/tmp/hai_sessions}
@@ -30,9 +40,10 @@ services:
       - HAI_RESULTS_CONTAINER_PATH=/hai-sessions
       - HAI_DOCKER_NETWORK=ai-effect-services
     volumes:
-      # Docker socket — required for the service to manage InteractiveAI containers.
+      # Docker socket — required for the service to launch and remove sub-containers.
       - /var/run/docker.sock:/var/run/docker.sock
-      # Shared results directory — InteractiveAI containers write here on survey submit.
+      # Shared results directory — both InteractiveAI (kpis.json) and
+      # hmisurveys (survey_outcomes.json) write here; WP3 polls for both files.
       # The host path must match HAI_RESULTS_HOST_PATH above.
       - ${HAI_RESULTS_HOST_PATH:-/tmp/hai_sessions}:/hai-sessions
     networks:

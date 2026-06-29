@@ -38,11 +38,14 @@ def manager() -> SessionManager:
 # ---------------------------------------------------------------------------
 
 def test_create_registers_session_in_pending_phase(manager: SessionManager) -> None:
-    """Tests that a new session starts in PENDING phase (pre-condition for FR-02)."""
+    """Tests that a new session starts in PENDING phase with all URL fields empty."""
     state = manager.create("session-001")
     assert state.phase == SessionPhase.PENDING
     assert state.session_id == "session-001"
     assert state.gui_url == ""
+    assert state.survey_url == ""
+    assert state.container_id == ""
+    assert state.survey_container_id == ""
     assert state.error_message == ""
 
 
@@ -66,7 +69,12 @@ def test_phase_advances_monotonically_through_full_lifecycle(manager: SessionMan
     manager.create(session_id)
 
     ordered_phases = [
-        (SessionPhase.GUI_READY,   {"gui_url": "http://host:8090"}),
+        (SessionPhase.GUI_READY,   {
+            "gui_url": "http://host:8090",
+            "survey_url": "http://host:8091",
+            "container_id": "ia-abc123",
+            "survey_container_id": "survey-def456",
+        }),
         (SessionPhase.IN_PROGRESS, {}),
         (SessionPhase.SURVEY,      {}),
         (SessionPhase.COMPLETED,   {"kpis": {"steps": 42}, "survey_outcomes": {"trust": 4}}),
@@ -131,13 +139,66 @@ def test_failed_phase_is_always_allowed_regardless_of_current_phase(
 
 def test_gui_url_is_stored_at_gui_ready_transition(manager: SessionManager) -> None:
     """Tests that gui_url is correctly recorded when transitioning to GUI_READY."""
-    session_id = "session-url"
+    session_id = "session-gui-url"
     manager.create(session_id)
     manager.advance_phase(
         session_id, SessionPhase.GUI_READY, gui_url="http://host.docker.internal:8090"
     )
     state = manager.get(session_id)
     assert state.gui_url == "http://host.docker.internal:8090"
+
+
+def test_survey_url_is_stored_at_gui_ready_transition(manager: SessionManager) -> None:
+    """Tests that survey_url is correctly recorded when transitioning to GUI_READY (FR-07)."""
+    session_id = "session-survey-url"
+    manager.create(session_id)
+    manager.advance_phase(
+        session_id, SessionPhase.GUI_READY, survey_url="http://host.docker.internal:8091"
+    )
+    state = manager.get(session_id)
+    assert state.survey_url == "http://host.docker.internal:8091"
+
+
+def test_both_container_ids_stored_at_gui_ready_transition(manager: SessionManager) -> None:
+    """Tests that container_id and survey_container_id are stored for later cleanup (FR-14)."""
+    session_id = "session-containers"
+    manager.create(session_id)
+    manager.advance_phase(
+        session_id,
+        SessionPhase.GUI_READY,
+        gui_url="http://host.docker.internal:8090",
+        survey_url="http://host.docker.internal:8091",
+        container_id="ia-container-abc",
+        survey_container_id="survey-container-def",
+    )
+    state = manager.get(session_id)
+    assert state.container_id == "ia-container-abc"
+    assert state.survey_container_id == "survey-container-def"
+
+
+def test_both_urls_and_container_ids_independent(manager: SessionManager) -> None:
+    """Tests that gui_url, survey_url, container_id, survey_container_id are all tracked.
+
+    Two-instances design requires all four fields to be independently addressable
+    so the polling thread can clean up both containers regardless of phase.
+    """
+    session_id = "session-two-instances"
+    manager.create(session_id)
+    manager.advance_phase(
+        session_id,
+        SessionPhase.GUI_READY,
+        gui_url="http://host.docker.internal:8090",
+        survey_url="http://host.docker.internal:8091",
+        container_id="ia-abc",
+        survey_container_id="survey-xyz",
+        volume_name=session_id,
+    )
+    state = manager.get(session_id)
+    assert state.gui_url == "http://host.docker.internal:8090"
+    assert state.survey_url == "http://host.docker.internal:8091"
+    assert state.container_id == "ia-abc"
+    assert state.survey_container_id == "survey-xyz"
+    assert state.volume_name == session_id
 
 
 def test_results_stored_at_completed_transition(manager: SessionManager) -> None:

@@ -1,11 +1,11 @@
 """Thread-safe session state manager for the Human-AI Interaction Testing service.
 
 Tracks the lifecycle of each human-AI testing session from PENDING through
-COMPLETED or FAILED. Each session records its current phase, the browser URL
-the operator accesses, any Docker container / volume identifiers needed for
-cleanup, and the final parsed results once available.
+COMPLETED or FAILED. Each session records its current phase, both browser URLs
+(gui_url for InteractiveAI, survey_url for hmisurveys), Docker container IDs
+for both sub-containers, and the final parsed results once available.
 
-Spec coverage: FR-02, FR-03, FR-10, FR-13
+Spec coverage: FR-02, FR-03, FR-07, FR-11, FR-14
 """
 
 from __future__ import annotations
@@ -40,10 +40,12 @@ class SessionState:
 
     session_id: str
     phase: SessionPhase = SessionPhase.PENDING
-    gui_url: str = ""
-    container_id: str = ""     # Docker container ID for InteractiveAI
-    volume_name: str = ""      # Named Docker volume or host path suffix
-    error_message: str = ""    # Non-empty only when phase == FAILED
+    gui_url: str = ""           # Browser URL for the InteractiveAI grid GUI
+    survey_url: str = ""        # Browser URL for the hmisurveys questionnaire
+    container_id: str = ""      # Docker container ID for InteractiveAI
+    survey_container_id: str = ""  # Docker container ID for hmisurveys
+    volume_name: str = ""       # Host-path suffix for the shared results directory
+    error_message: str = ""     # Non-empty only when phase == FAILED
     kpis: dict[str, Any] = field(default_factory=dict)
     survey_outcomes: dict[str, Any] = field(default_factory=dict)
     session_metadata: dict[str, str] = field(default_factory=dict)
@@ -93,7 +95,9 @@ class SessionManager:
         new_phase: SessionPhase,
         *,
         gui_url: str = "",
+        survey_url: str = "",
         container_id: str = "",
+        survey_container_id: str = "",
         volume_name: str = "",
         error_message: str = "",
         kpis: dict[str, Any] | None = None,
@@ -108,12 +112,14 @@ class SessionManager:
         Args:
             session_id: Session to update.
             new_phase: Target phase.
-            gui_url: Browser URL to record (only meaningful at GUI_READY).
-            container_id: Docker container ID to record for later cleanup.
-            volume_name: Volume or host-dir suffix used for this session.
+            gui_url: InteractiveAI browser URL (recorded at GUI_READY).
+            survey_url: hmisurveys browser URL (recorded at GUI_READY).
+            container_id: Docker container ID for InteractiveAI (for cleanup).
+            survey_container_id: Docker container ID for hmisurveys (for cleanup).
+            volume_name: Host-path suffix for the shared results directory.
             error_message: Human-readable failure reason (FAILED phase only).
-            kpis: Parsed grid KPI dict from the results JSON (COMPLETED only).
-            survey_outcomes: Parsed survey outcome dict (COMPLETED only).
+            kpis: Parsed grid KPI dict from kpis.json (COMPLETED only).
+            survey_outcomes: Parsed survey outcome dict from survey_outcomes.json (COMPLETED only).
             session_metadata: Arbitrary string key-value metadata to attach.
 
         Raises:
@@ -132,8 +138,12 @@ class SessionManager:
             state.phase = new_phase
             if gui_url:
                 state.gui_url = gui_url
+            if survey_url:
+                state.survey_url = survey_url
             if container_id:
                 state.container_id = container_id
+            if survey_container_id:
+                state.survey_container_id = survey_container_id
             if volume_name:
                 state.volume_name = volume_name
             if error_message:

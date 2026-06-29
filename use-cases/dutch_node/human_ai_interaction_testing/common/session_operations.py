@@ -1,26 +1,47 @@
 """gRPC servicer, Docker container management, and result polling for Human-AI Testing.
 
-This module owns the three gRPC RPCs exposed by HumanAIInteractionTestingService and
-all supporting logic: launching the InteractiveAI Docker container per session,
-monitoring the shared results directory for the results JSON produced by the container,
-enforcing session timeouts, and cleaning up containers when sessions terminate.
+This module owns the three gRPC RPCs and all supporting logic for the
+two-instances design: InteractiveAI (grid simulation) and hmisurveys (survey)
+run as **independent Docker containers** launched together at session start.
+The operator receives two browser URLs — gui_url for the grid GUI and
+survey_url for the questionnaire — and navigates between them manually.
+
+Each container writes its own result file to a shared host directory:
+  - InteractiveAI  →  kpis.json           (on grid episode end)        FR-08
+  - hmisurveys     →  survey_outcomes.json (on survey submit)           FR-09
+
+The background polling thread checks for BOTH files (FR-10) and only
+transitions to COMPLETED when both are present. Either container writing
+alone is not sufficient.
 
 Environment variables consumed (all optional, defaults documented below):
-  HAI_INTERACTIVE_AI_IMAGE   Docker image for InteractiveAI (no default — must be set)
-  HAI_INTERACTIVE_AI_PORT    Host port to expose the InteractiveAI GUI on (default: 8090)
-  HAI_GUI_BASE_URL           Base URL returned as gui_url to callers
-                             (default: http://host.docker.internal:8090)
-  HAI_RESULTS_HOST_PATH      Absolute host path for the shared results directory
-                             (default: /tmp/hai_sessions)
-  HAI_RESULTS_CONTAINER_PATH Path inside this service container where the results
-                             directory is mounted (default: /hai-sessions)
-  HAI_DOCKER_NETWORK         Docker network to attach InteractiveAI to
-                             (default: ai-effect-services)
-  GRPC_PORT                  gRPC server port for this service (default: 50051)
-  HAI_RESULTS_FILENAME       Filename written by InteractiveAI on survey submit
-                             (default: session_result.json)
 
-Spec coverage: FR-01, FR-03, FR-08, FR-09, FR-10, FR-13, FR-15
+  InteractiveAI container:
+    HAI_INTERACTIVE_AI_IMAGE    Docker image (no default — must be set; build locally)
+    HAI_INTERACTIVE_AI_PORT     Host port for the grid GUI  (default: 8090)
+    HAI_GUI_BASE_URL            Returned as gui_url          (default: http://host.docker.internal:8090)
+
+  hmisurveys container:
+    HAI_HMISURVEYS_IMAGE        Docker image (no default — must be set; build locally)
+    HAI_HMISURVEYS_PORT         Host port for the survey UI (default: 8091)
+    HAI_SURVEY_BASE_URL         Returned as survey_url       (default: http://host.docker.internal:8091)
+
+  Shared:
+    HAI_RESULTS_HOST_PATH       Absolute host path for per-session result dirs
+                                (default: /tmp/hai_sessions)
+    HAI_RESULTS_CONTAINER_PATH  Mount point inside this service container
+                                (default: /hai-sessions)
+    HAI_DOCKER_NETWORK          Docker network for both sub-containers
+                                (default: ai-effect-services)
+    GRPC_PORT                   gRPC server port (default: 50051)
+
+  Result filenames (written by each tool — see OQ-1 and OQ-2):
+    HAI_KPIS_FILENAME           Written by InteractiveAI on episode end
+                                (default: kpis.json)
+    HAI_SURVEY_FILENAME         Written by hmisurveys on survey submit
+                                (default: survey_outcomes.json)
+
+Spec coverage: FR-01, FR-03, FR-07, FR-08, FR-09, FR-10, FR-11, FR-12, FR-14, FR-16
 """
 
 from __future__ import annotations
@@ -43,44 +64,72 @@ from .session_manager import SessionPhase, get_session_manager
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Environment-driven configuration
+# Environment-driven configuration — InteractiveAI container
 # ---------------------------------------------------------------------------
 
-# Docker image for InteractiveAI — MUST be set in the environment.
-# TODO (OQ-4): Confirm the exact image name/tag with AI4REALNET.
+# Docker image for InteractiveAI — build locally from AI4REALNET/InteractiveAI.
+# TODO (OQ-5): Confirm the image tag after building.
 INTERACTIVE_AI_IMAGE: str = os.environ.get("HAI_INTERACTIVE_AI_IMAGE", "")
 
-# Host port where InteractiveAI's web-app GUI is reachable from the browser.
-# TODO (OQ-5): Confirm the default port with the InteractiveAI documentation.
+# Host port where the InteractiveAI web-app GUI is reachable from the operator's browser.
+# TODO (OQ-6): Confirm the port by running InteractiveAI locally.
 INTERACTIVE_AI_HOST_PORT: int = int(os.environ.get("HAI_INTERACTIVE_AI_PORT", "8090"))
 
-# The gui_url returned to callers — must be reachable from the operator's browser.
+# URL returned to callers as gui_url. Must be reachable from the operator's browser.
 # On Docker Desktop (Mac/Windows) host.docker.internal resolves to the host machine.
-# On Linux, set this to the host IP or a hostname accessible to the operator.
+# On Linux, replace with the host IP or a hostname the operator can reach.
 GUI_BASE_URL: str = os.environ.get(
     "HAI_GUI_BASE_URL",
     f"http://host.docker.internal:{INTERACTIVE_AI_HOST_PORT}",
 )
 
+# ---------------------------------------------------------------------------
+# Environment-driven configuration — hmisurveys container
+# ---------------------------------------------------------------------------
+
+# Docker image for hmisurveys — build locally from AI4REALNET/hmisurveys.
+# TODO (OQ-5): Confirm the image tag after building.
+HMISURVEYS_IMAGE: str = os.environ.get("HAI_HMISURVEYS_IMAGE", "")
+
+# Host port where the hmisurveys survey UI is reachable from the operator's browser.
+# TODO (OQ-7): Confirm the port by running hmisurveys locally.
+HMISURVEYS_HOST_PORT: int = int(os.environ.get("HAI_HMISURVEYS_PORT", "8091"))
+
+# URL returned to callers as survey_url.
+SURVEY_BASE_URL: str = os.environ.get(
+    "HAI_SURVEY_BASE_URL",
+    f"http://host.docker.internal:{HMISURVEYS_HOST_PORT}",
+)
+
+# ---------------------------------------------------------------------------
+# Environment-driven configuration — shared
+# ---------------------------------------------------------------------------
+
 # Host-side absolute path where per-session result subdirectories are created.
-# This path must be mounted into this service container (see docker-compose-all.yml).
+# Both containers mount their session subdirectory under this base path.
 RESULTS_HOST_BASE_PATH: str = os.environ.get(
     "HAI_RESULTS_HOST_PATH", "/tmp/hai_sessions"
 )
 
-# Path inside THIS container where RESULTS_HOST_BASE_PATH is mounted.
+# Path inside THIS service container where RESULTS_HOST_BASE_PATH is mounted.
 RESULTS_CONTAINER_BASE_PATH: str = os.environ.get(
     "HAI_RESULTS_CONTAINER_PATH", "/hai-sessions"
 )
 
-# Docker network the InteractiveAI container is attached to.
+# Docker network both sub-containers are attached to.
 DOCKER_NETWORK: str = os.environ.get("HAI_DOCKER_NETWORK", "ai-effect-services")
 
-# Filename written by InteractiveAI when the operator submits the survey.
-# TODO (OQ-1): Confirm this path with the InteractiveAI results-export hook.
-RESULTS_FILENAME: str = os.environ.get("HAI_RESULTS_FILENAME", "session_result.json")
+# Filename written by InteractiveAI on grid episode end (FR-08).
+# TODO (OQ-1): Confirm this with the InteractiveAI export hook implementation.
+KPIS_FILENAME: str = os.environ.get("HAI_KPIS_FILENAME", "kpis.json")
 
-# How often (in seconds) the background thread checks for the results file.
+# Filename written by hmisurveys on survey submit (FR-09).
+# TODO (OQ-2): Confirm this with the hmisurveys export hook implementation.
+SURVEY_OUTCOMES_FILENAME: str = os.environ.get(
+    "HAI_SURVEY_FILENAME", "survey_outcomes.json"
+)
+
+# How often (seconds) the background polling thread checks for result files (FR-10).
 POLL_INTERVAL_SECONDS: float = 5.0
 
 # ---------------------------------------------------------------------------
@@ -134,51 +183,36 @@ def _metric_value_from_any(value: Any) -> hai_pb2.MetricValue:
     return metric
 
 
-def _parse_results_file(results_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Parse the JSON results file written by the InteractiveAI container.
+def _parse_results_file(results_path: Path) -> dict[str, Any]:
+    """Parse a single JSON result file written by InteractiveAI or hmisurveys.
 
-    The file is expected to have two top-level keys:
-      - "kpis": dict of grid performance metric name → value
-      - "survey_outcomes": dict of survey field name → value
-
-    Keys are never hardcoded here — they are taken as-is from the JSON so the
-    service remains forward-compatible with InteractiveAI and hmisurveys updates.
+    The file must contain a JSON object at the root level. Keys are taken as-is
+    so the service remains forward-compatible with tool updates (FR-08, FR-09).
 
     Args:
-        results_path: Absolute path to the results JSON file inside this container.
+        results_path: Absolute path to the JSON file inside this container.
 
     Returns:
-        A tuple (kpis, survey_outcomes) where each is a dict of string keys to
-        arbitrary Python values.
+        A dict of string keys to arbitrary Python values.
 
     Raises:
-        ValueError: If the file is not valid JSON or missing expected top-level keys.
+        ValueError: If the file is not valid JSON or the root is not a JSON object.
     """
     try:
         raw = results_path.read_text(encoding="utf-8")
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Results file is not valid JSON: {exc}") from exc
+        raise ValueError(
+            f"Results file is not valid JSON: {results_path.name} — {exc}"
+        ) from exc
 
     if not isinstance(data, dict):
         raise ValueError(
-            f"Results file must contain a JSON object; got {type(data).__name__}"
+            f"Results file must contain a JSON object at the root; "
+            f"got {type(data).__name__} in {results_path.name}"
         )
 
-    kpis: dict[str, Any] = data.get("kpis", {})
-    survey_outcomes: dict[str, Any] = data.get("survey_outcomes", {})
-
-    if not isinstance(kpis, dict):
-        raise ValueError(
-            f"results JSON 'kpis' must be an object; got {type(kpis).__name__}"
-        )
-    if not isinstance(survey_outcomes, dict):
-        raise ValueError(
-            f"results JSON 'survey_outcomes' must be an object; "
-            f"got {type(survey_outcomes).__name__}"
-        )
-
-    return kpis, survey_outcomes
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +224,7 @@ def _get_docker_client():
 
     Raises:
         RuntimeError: If the docker package is not installed or the socket is
-                      not accessible.
+                      not accessible (OQ-8).
     """
     try:
         import docker  # type: ignore
@@ -207,20 +241,20 @@ def _get_docker_client():
     except Exception as exc:
         raise RuntimeError(
             "Cannot connect to Docker daemon. "
-            "Ensure /var/run/docker.sock is mounted into this container "
-            "and the Docker socket is accessible."
+            "Ensure /var/run/docker.sock is mounted into this container. "
+            "See README.md OQ-8 for setup instructions."
         ) from exc
 
 
 def _create_session_results_directory(session_id: str) -> tuple[str, str]:
-    """Create the host-side results directory for a session.
+    """Create the per-session results directory and return both host and container paths.
 
-    Returns both the host-absolute path (passed to Docker SDK when launching
-    the InteractiveAI container) and the container-local path (used by this
-    service to poll for the results file).
+    The host path is passed to the Docker SDK when mounting volumes into the
+    InteractiveAI and hmisurveys containers. The container path is used by the
+    polling thread running inside this service container.
 
     Args:
-        session_id: Unique session identifier used as the directory name.
+        session_id: Unique session identifier used as the subdirectory name.
 
     Returns:
         A tuple (host_path, container_path) — both are absolute path strings.
@@ -228,116 +262,145 @@ def _create_session_results_directory(session_id: str) -> tuple[str, str]:
     host_session_dir = os.path.join(RESULTS_HOST_BASE_PATH, session_id)
     container_session_dir = os.path.join(RESULTS_CONTAINER_BASE_PATH, session_id)
 
-    # Create the directory on the container-visible mount so it exists before
-    # the InteractiveAI container tries to write to it.
+    # Create the directory on the container-visible path so it exists before
+    # either sub-container tries to write into it.
     Path(container_session_dir).mkdir(parents=True, exist_ok=True)
 
     return host_session_dir, container_session_dir
 
 
-def _launch_interactive_ai_container(
+def _launch_session_containers(
     session_id: str,
     host_results_path: str,
     spec: Any,
-) -> tuple[str, str]:
-    """Launch the InteractiveAI Docker container for a testing session.
+) -> tuple[str, str, str, str]:
+    """Launch both the InteractiveAI and hmisurveys Docker containers for a session.
 
-    The container is started in web-app / browser-served simulator mode (FR-15)
-    as this mode is more stable than alternative launch modes. The session results
-    directory is mounted so the container can write the results JSON on survey
-    submit (FR-08).
+    InteractiveAI is launched in web-app / browser-served simulator mode (FR-16)
+    as this mode is more stable than alternative launch modes. hmisurveys is
+    launched as an independent container on the same Docker network.
+
+    Both containers receive the shared results directory as a volume mount at
+    /results so each tool can write its own result file independently (FR-08,
+    FR-09). They do NOT communicate with each other.
 
     Args:
-        session_id: Unique identifier for this session (used for container naming).
-        host_results_path: Absolute host-side path for the results volume mount.
-        spec: The parsed HumanAISessionSpec protobuf message.
+        session_id: Unique identifier for this session (used in container names).
+        host_results_path: Absolute host-side path for the shared volume mount.
+        spec: The parsed HumanAISessionSpec protobuf message (or duck-type proxy).
 
     Returns:
-        A tuple (container_id, gui_url) — the Docker container ID and the URL
-        the operator should open in a browser.
+        A tuple (ia_container_id, hmisurveys_container_id, gui_url, survey_url).
 
     Raises:
-        RuntimeError: If INTERACTIVE_AI_IMAGE is not configured or Docker fails.
+        RuntimeError: If either image env var is unset or Docker cannot start a container.
     """
     if not INTERACTIVE_AI_IMAGE:
         raise RuntimeError(
-            "HAI_INTERACTIVE_AI_IMAGE environment variable is not set. "
-            "Set it to the InteractiveAI Docker image name/tag before starting "
-            "the service. See README.md for setup instructions."
+            "HAI_INTERACTIVE_AI_IMAGE is not set. "
+            "Build the InteractiveAI image locally and set this env var. "
+            "See README.md for instructions."
+        )
+    if not HMISURVEYS_IMAGE:
+        raise RuntimeError(
+            "HAI_HMISURVEYS_IMAGE is not set. "
+            "Build the hmisurveys image locally and set this env var. "
+            "See README.md for instructions."
         )
 
     docker_client = _get_docker_client()
 
-    container_name = f"hai-interactive-ai-{session_id[:8]}"
+    # Shared volume mount: both containers write to /results inside the container,
+    # which maps to host_results_path on the host filesystem (FR-08, FR-09).
+    shared_volume_mount = {host_results_path: {"bind": "/results", "mode": "rw"}}
 
-    # Build environment variables to pass to InteractiveAI.
-    # These configure the scenario, agent, and survey selection.
-    # TODO (OQ-1, OQ-2, OQ-3): Align these env var names with the actual
-    # InteractiveAI configuration interface once confirmed with AI4REALNET.
+    # --- InteractiveAI container (FR-01, FR-16) ---
     interactive_ai_env: dict[str, str] = {
         "HAI_SESSION_ID": session_id,
-        "HAI_RESULTS_PATH": "/results",  # mount point inside InteractiveAI container
-        "HAI_RESULTS_FILENAME": RESULTS_FILENAME,
+        "HAI_RESULTS_PATH": "/results",
+        "HAI_KPIS_FILENAME": KPIS_FILENAME,
     }
 
     scenario_name = spec.scenario.name if spec.scenario.name else ""
     agent_name = spec.agent.name if spec.agent.name else ""
-    survey_id = spec.survey.survey_id if spec.survey.survey_id else ""
 
     if scenario_name:
         interactive_ai_env["HAI_SCENARIO"] = scenario_name
     if agent_name:
         interactive_ai_env["HAI_AGENT"] = agent_name
-    if survey_id:
-        interactive_ai_env["HAI_SURVEY_ID"] = survey_id
-
     if spec.kpis:
         interactive_ai_env["HAI_KPIS"] = ",".join(spec.kpis)
 
+    # TODO (OQ-1): Confirm the env var names InteractiveAI uses to locate the
+    # results path and KPI filename once the export hook is implemented.
     logger.info(
         "Launching InteractiveAI container: session=%s image=%s port=%s",
-        session_id,
-        INTERACTIVE_AI_IMAGE,
-        INTERACTIVE_AI_HOST_PORT,
+        session_id, INTERACTIVE_AI_IMAGE, INTERACTIVE_AI_HOST_PORT,
     )
-
-    # Launch in web-app mode — more stable than other InteractiveAI modes (FR-15, NFR-02).
-    container = docker_client.containers.run(
+    interactive_ai_container = docker_client.containers.run(
         INTERACTIVE_AI_IMAGE,
         detach=True,
-        name=container_name,
+        name=f"hai-ia-{session_id[:8]}",
         network=DOCKER_NETWORK,
         environment=interactive_ai_env,
-        volumes={
-            host_results_path: {"bind": "/results", "mode": "rw"},
-        },
-        ports={
-            "8080/tcp": INTERACTIVE_AI_HOST_PORT,
-        },
-        labels={
-            "hai.session_id": session_id,
-            "hai.service": "interactive-ai-testing",
-        },
+        volumes=shared_volume_mount,
+        ports={"8080/tcp": INTERACTIVE_AI_HOST_PORT},
+        labels={"hai.session_id": session_id, "hai.role": "interactive-ai"},
     )
-
     logger.info(
-        "InteractiveAI container started: id=%s name=%s session=%s",
-        container.id[:12],
-        container_name,
-        session_id,
+        "InteractiveAI container started: id=%s session=%s",
+        interactive_ai_container.id[:12], session_id,
     )
 
-    return container.id, GUI_BASE_URL
+    # --- hmisurveys container (FR-07) ---
+    survey_env: dict[str, str] = {
+        "HAI_SESSION_ID": session_id,
+        "HAI_RESULTS_PATH": "/results",
+        "HAI_SURVEY_FILENAME": SURVEY_OUTCOMES_FILENAME,
+    }
+
+    survey_id = spec.survey.survey_id if spec.survey.survey_id else ""
+    if survey_id:
+        survey_env["HAI_SURVEY_ID"] = survey_id
+
+    # TODO (OQ-2): Confirm the env var names hmisurveys uses to locate the
+    # results path and survey filename once the export hook is implemented.
+    logger.info(
+        "Launching hmisurveys container: session=%s image=%s port=%s",
+        session_id, HMISURVEYS_IMAGE, HMISURVEYS_HOST_PORT,
+    )
+    hmisurveys_container = docker_client.containers.run(
+        HMISURVEYS_IMAGE,
+        detach=True,
+        name=f"hai-survey-{session_id[:8]}",
+        network=DOCKER_NETWORK,
+        environment=survey_env,
+        volumes=shared_volume_mount,
+        ports={"8080/tcp": HMISURVEYS_HOST_PORT},
+        labels={"hai.session_id": session_id, "hai.role": "hmisurveys"},
+    )
+    logger.info(
+        "hmisurveys container started: id=%s session=%s",
+        hmisurveys_container.id[:12], session_id,
+    )
+
+    return (
+        interactive_ai_container.id,
+        hmisurveys_container.id,
+        GUI_BASE_URL,
+        SURVEY_BASE_URL,
+    )
 
 
-def _stop_and_remove_container(container_id: str, session_id: str) -> None:
-    """Stop and remove the InteractiveAI container to prevent resource leaks.
+def _stop_and_remove_container(container_id: str, role: str, session_id: str) -> None:
+    """Stop and remove a single Docker container to prevent resource leaks.
 
-    Called when a session reaches COMPLETED or FAILED (FR-13). Failures during
-    cleanup are logged but not re-raised so they do not mask the primary result.
+    Called from the finally block of the polling thread for both sub-containers
+    (FR-14). Failures are logged but not re-raised.
 
     Args:
         container_id: Docker container ID to stop and remove.
+        role: Human-readable name for logging ('interactive-ai' or 'hmisurveys').
         session_id: Session ID for log context.
     """
     if not container_id:
@@ -349,16 +412,13 @@ def _stop_and_remove_container(container_id: str, session_id: str) -> None:
         container.stop(timeout=10)
         container.remove()
         logger.info(
-            "Cleaned up InteractiveAI container: id=%s session=%s",
-            container_id[:12],
-            session_id,
+            "Container cleaned up: role=%s id=%s session=%s",
+            role, container_id[:12], session_id,
         )
     except Exception as exc:
         logger.warning(
-            "Container cleanup failed (non-fatal): id=%s session=%s error=%s",
-            container_id[:12] if container_id else "unknown",
-            session_id,
-            exc,
+            "Container cleanup failed (non-fatal): role=%s id=%s session=%s error=%s",
+            role, container_id[:12] if container_id else "unknown", session_id, exc,
         )
 
 
@@ -368,98 +428,119 @@ def _stop_and_remove_container(container_id: str, session_id: str) -> None:
 
 def _run_session_polling_thread(
     session_id: str,
-    container_id: str,
+    ia_container_id: str,
+    hmisurveys_container_id: str,
     container_session_dir: str,
     session_timeout_seconds: int,
 ) -> None:
     """Background thread that monitors a session and drives phase transitions.
 
-    Responsibilities:
-    1. Polls the results directory for the results JSON file (FR-09).
-    2. On file detection, parses results and transitions to COMPLETED (FR-08).
-    3. Monitors the session timeout; transitions to FAILED on expiry (FR-10).
-    4. Cleans up the Docker container on terminal phase (FR-13).
+    Waits for BOTH result files to appear in the shared directory (FR-10):
+      - kpis.json            written by InteractiveAI on episode end (FR-08)
+      - survey_outcomes.json written by hmisurveys on survey submit  (FR-09)
 
-    This function is run in a daemon thread; it exits as soon as the session
-    reaches a terminal phase.
+    The session only transitions to COMPLETED when both files are present.
+    Either file alone leaves the session in progress. On timeout, transitions
+    to FAILED regardless of which files have or have not appeared (FR-11).
+    Cleans up both containers on exit regardless of outcome (FR-14).
 
     Args:
         session_id: Session to monitor.
-        container_id: Docker container ID for cleanup.
-        container_session_dir: Path (inside this container) to the per-session
+        ia_container_id: Docker container ID for InteractiveAI (for cleanup).
+        hmisurveys_container_id: Docker container ID for hmisurveys (for cleanup).
+        container_session_dir: Path inside this container to the per-session
                                results directory.
         session_timeout_seconds: Seconds after which a non-completed session
                                  is transitioned to FAILED.
     """
     session_manager = get_session_manager()
-    results_file_path = Path(container_session_dir) / RESULTS_FILENAME
+    kpis_path = Path(container_session_dir) / KPIS_FILENAME
+    survey_path = Path(container_session_dir) / SURVEY_OUTCOMES_FILENAME
     deadline = time.monotonic() + session_timeout_seconds
 
     logger.info(
-        "Session polling started: session=%s timeout=%ds results_path=%s",
-        session_id,
-        session_timeout_seconds,
-        results_file_path,
+        "Session polling started: session=%s timeout=%ds kpis_path=%s survey_path=%s",
+        session_id, session_timeout_seconds, kpis_path, survey_path,
     )
 
     try:
         while True:
             current_time = time.monotonic()
 
-            # Check for timeout before anything else (FR-10).
+            # Timeout check comes first so a simultaneous file + timeout is safe (FR-11).
             if current_time >= deadline:
+                kpis_present = kpis_path.exists()
+                survey_present = survey_path.exists()
+                missing = [
+                    name for name, present in [
+                        (KPIS_FILENAME, kpis_present),
+                        (SURVEY_OUTCOMES_FILENAME, survey_present),
+                    ]
+                    if not present
+                ]
                 logger.warning(
-                    "Session timed out: session=%s timeout=%ds",
-                    session_id,
-                    session_timeout_seconds,
+                    "Session timed out: session=%s timeout=%ds missing_files=%s",
+                    session_id, session_timeout_seconds, missing,
                 )
                 session_manager.advance_phase(
                     session_id,
                     SessionPhase.FAILED,
                     error_message=(
-                        f"Session timed out after {session_timeout_seconds} seconds "
-                        "without survey submission."
+                        f"Session timed out after {session_timeout_seconds} seconds. "
+                        f"Missing result files: {missing}"
                     ),
                 )
                 break
 
-            # Check if results file has appeared (FR-09).
-            if results_file_path.exists():
-                logger.info(
-                    "Results file detected: session=%s path=%s",
-                    session_id,
-                    results_file_path,
-                )
+            kpis_present = kpis_path.exists()
+            survey_present = survey_path.exists()
 
+            if kpis_present and survey_present:
+                # Both files present — parse each independently and complete (FR-10).
+                logger.info(
+                    "Both result files detected: session=%s", session_id
+                )
                 try:
-                    kpis, survey_outcomes = _parse_results_file(results_file_path)
+                    kpis = _parse_results_file(kpis_path)
+                    survey_outcomes = _parse_results_file(survey_path)
+
                     session_manager.advance_phase(
                         session_id,
                         SessionPhase.COMPLETED,
                         kpis=kpis,
                         survey_outcomes=survey_outcomes,
-                        session_metadata={"results_file": str(results_file_path)},
+                        session_metadata={
+                            "kpis_file": str(kpis_path),
+                            "survey_file": str(survey_path),
+                        },
                     )
                     logger.info(
                         "Session completed: session=%s kpi_count=%d survey_count=%d",
-                        session_id,
-                        len(kpis),
-                        len(survey_outcomes),
+                        session_id, len(kpis), len(survey_outcomes),
                     )
                     break
 
                 except ValueError as exc:
                     logger.error(
-                        "Failed to parse results file: session=%s error=%s",
-                        session_id,
-                        exc,
+                        "Failed to parse result files: session=%s error=%s",
+                        session_id, exc,
                     )
                     session_manager.advance_phase(
                         session_id,
                         SessionPhase.FAILED,
-                        error_message=f"Results file parse error: {exc}",
+                        error_message=f"Result file parse error: {exc}",
                     )
                     break
+
+            # Log partial completion at most once per file to avoid log spam.
+            if kpis_present and not survey_present:
+                logger.debug(
+                    "KPIs ready, awaiting survey outcomes: session=%s", session_id
+                )
+            elif survey_present and not kpis_present:
+                logger.debug(
+                    "Survey outcomes ready, awaiting KPIs: session=%s", session_id
+                )
 
             time.sleep(POLL_INTERVAL_SECONDS)
 
@@ -474,11 +555,14 @@ def _run_session_polling_thread(
                 error_message=f"Internal polling error: {exc}",
             )
         except Exception:
-            pass  # Session may already be terminal; ignore secondary errors.
+            pass  # Session may already be terminal; secondary errors are ignored.
 
     finally:
-        # Always clean up the container when exiting the polling thread (FR-13).
-        _stop_and_remove_container(container_id, session_id)
+        # Always clean up both containers when the polling thread exits (FR-14).
+        _stop_and_remove_container(ia_container_id, "interactive-ai", session_id)
+        _stop_and_remove_container(
+            hmisurveys_container_id, "hmisurveys", session_id
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -490,43 +574,38 @@ class HumanAIInteractionTestingServicer(
 ):
     """gRPC servicer implementing the three Human-AI Interaction Testing RPCs.
 
-    Spec coverage: FR-01, FR-02, FR-03
+    Spec coverage: FR-01, FR-02, FR-03, FR-07
     """
 
     def StartHumanAISession(self, request, context):
         """Launch a new human-AI interaction testing session.
 
-        Validates the incoming HumanAISessionSpec, checks that no other session
-        is currently active (v1 constraint, NFR-03), launches the InteractiveAI
-        Docker container, starts the background polling thread, and returns the
-        session_id and gui_url immediately.
+        Launches both the InteractiveAI and hmisurveys Docker containers,
+        starts the background polling thread, and returns session_id,
+        gui_url (InteractiveAI), and survey_url (hmisurveys) immediately.
 
         Args:
-            request: HumanAISessionSpec protobuf message from the caller.
+            request: HumanAISessionSpec protobuf message.
             context: gRPC server context for setting status codes.
 
         Returns:
-            StartSessionResponse with session_id and gui_url on success.
+            StartSessionResponse with session_id, gui_url, and survey_url.
         """
         session_manager = get_session_manager()
 
-        # Validate required fields (FR-04).
         if request.session_timeout_seconds <= 0:
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
-            context.set_details(
-                "session_timeout_seconds must be > 0"
-            )
+            context.set_details("session_timeout_seconds must be > 0")
             return hai_pb2.StartSessionResponse(
                 success=False,
                 message="session_timeout_seconds must be > 0",
             )
 
-        # Enforce single-session-at-a-time constraint (NFR-03 / v1 limitation).
         if session_manager.has_active_session():
             context.set_code(grpc.StatusCode.RESOURCE_EXHAUSTED)
             context.set_details(
-                "A session is already active. Only one session at a time is "
-                "supported in v1. Wait for the current session to complete or fail."
+                "A session is already active. "
+                "Only one session at a time is supported in v1."
             )
             return hai_pb2.StartSessionResponse(
                 success=False,
@@ -537,35 +616,32 @@ class HumanAIInteractionTestingServicer(
         logger.info("Starting new session: session=%s", session_id)
 
         try:
-            # Create the session record before launching the container so the
-            # polling thread can reference it immediately.
             session_manager.create(session_id)
 
             host_results_path, container_results_path = (
                 _create_session_results_directory(session_id)
             )
 
-            container_id, gui_url = _launch_interactive_ai_container(
-                session_id,
-                host_results_path,
-                request,
+            ia_container_id, hmisurveys_container_id, gui_url, survey_url = (
+                _launch_session_containers(session_id, host_results_path, request)
             )
 
-            # Transition to GUI_READY now that the container is running (FR-01).
             session_manager.advance_phase(
                 session_id,
                 SessionPhase.GUI_READY,
                 gui_url=gui_url,
-                container_id=container_id,
+                survey_url=survey_url,
+                container_id=ia_container_id,
+                survey_container_id=hmisurveys_container_id,
                 volume_name=session_id,
             )
 
-            # Start the background thread that polls for results and enforces timeout.
             polling_thread = threading.Thread(
                 target=_run_session_polling_thread,
                 args=(
                     session_id,
-                    container_id,
+                    ia_container_id,
+                    hmisurveys_container_id,
                     container_results_path,
                     int(request.session_timeout_seconds),
                 ),
@@ -575,23 +651,23 @@ class HumanAIInteractionTestingServicer(
             polling_thread.start()
 
             logger.info(
-                "Session started: session=%s gui_url=%s timeout=%ds",
-                session_id,
-                gui_url,
-                request.session_timeout_seconds,
+                "Session started: session=%s gui_url=%s survey_url=%s timeout=%ds",
+                session_id, gui_url, survey_url, request.session_timeout_seconds,
             )
 
             return hai_pb2.StartSessionResponse(
                 success=True,
-                message="Session started. Share the gui_url with the operator.",
+                message=(
+                    "Session started. Share gui_url with the operator for the grid "
+                    "simulation, and survey_url for the questionnaire after the episode ends."
+                ),
                 session_id=session_id,
                 gui_url=gui_url,
+                survey_url=survey_url,
             )
 
         except Exception as exc:
             logger.exception("Failed to start session: session=%s", session_id)
-
-            # Mark the session failed if it was created before the error.
             try:
                 session_manager.advance_phase(
                     session_id,
@@ -630,7 +706,6 @@ class HumanAIInteractionTestingServicer(
                 session_id=request.session_id,
             )
 
-        # Map the internal SessionPhase enum to the proto enum value.
         proto_phase = hai_pb2.SessionPhase.Value(
             f"SESSION_PHASE_{state.phase.name}"
         )
@@ -645,9 +720,6 @@ class HumanAIInteractionTestingServicer(
 
     def GetSessionResult(self, request, context):
         """Return grid KPIs and survey outcomes for a completed session (FR-03).
-
-        Returns a FAILED_PRECONDITION error if the session has not yet reached
-        COMPLETED, and NOT_FOUND if the session_id is unknown.
 
         Args:
             request: SessionResultRequest with session_id.
@@ -681,7 +753,6 @@ class HumanAIInteractionTestingServicer(
                 session_id=request.session_id,
             )
 
-        # Build the response by converting the raw Python dicts to proto MetricValue maps.
         response = hai_pb2.SessionResultResponse(
             success=True,
             message="Session results available.",
@@ -692,7 +763,9 @@ class HumanAIInteractionTestingServicer(
             response.kpis[str(key)].CopyFrom(_metric_value_from_any(value))
 
         for key, value in state.survey_outcomes.items():
-            response.survey_outcomes[str(key)].CopyFrom(_metric_value_from_any(value))
+            response.survey_outcomes[str(key)].CopyFrom(
+                _metric_value_from_any(value)
+            )
 
         for key, value in state.session_metadata.items():
             response.metadata[str(key)] = str(value)
@@ -710,7 +783,6 @@ def start_grpc_server():
     """Start the Human-AI Interaction Testing gRPC data plane server.
 
     Reads the port from the GRPC_PORT environment variable (default: 50051).
-    The server runs in a background thread pool.
 
     Returns:
         The running grpc.Server instance.
@@ -722,7 +794,9 @@ def start_grpc_server():
     )
     server.add_insecure_port(f"[::]:{grpc_port}")
     server.start()
-    logger.info("Human-AI Interaction Testing gRPC server started on port %s", grpc_port)
+    logger.info(
+        "Human-AI Interaction Testing gRPC server started on port %s", grpc_port
+    )
     return server
 
 
@@ -730,26 +804,23 @@ def start_grpc_server():
 # HTTP control plane handler (for WP3 orchestrator integration)
 # ---------------------------------------------------------------------------
 
-def _execute_start_session(request) -> dict[str, Any]:
+def _execute_start_session(request) -> Any:
     """HTTP control plane handler for 'StartHumanAISession'.
 
-    Called by the WP3 orchestrator via POST /control/execute. Launches the
-    session asynchronously and returns immediately so the orchestrator can poll
-    GET /control/status/{task_id} until complete.
+    Called by the WP3 orchestrator via POST /control/execute. Launches both
+    containers asynchronously and returns immediately so the orchestrator can
+    poll GET /control/status/{task_id} until complete.
 
     Args:
         request: ExecuteRequest from the FastAPI control router.
 
     Returns:
-        A dict with 'status', 'output' reference, and optional 'error'.
+        ExecuteResponse with status 'pending' and a gRPC DataReference.
     """
     import base64
-
-    from .control_interface import DataReference, ExecuteResponse, get_data_url
-    from .session_manager import get_session_manager as _get_mgr
+    from .control_interface import DataReference, ExecuteResponse
 
     try:
-        # Decode the inline JSON payload carrying the session spec fields.
         if not request.inputs:
             return ExecuteResponse(
                 status="failed",
@@ -760,15 +831,15 @@ def _execute_start_session(request) -> dict[str, Any]:
         raw_input = request.inputs[0]
         protocol = str(raw_input.get("protocol", "")).lower()
 
-        if protocol == "inline":
-            encoded = raw_input.get("uri", "")
-            spec_dict = json.loads(base64.b64decode(encoded).decode("utf-8"))
-        else:
+        if protocol != "inline":
             return ExecuteResponse(
                 status="failed",
                 error=f"Unsupported input protocol: {protocol}. Use 'inline'.",
                 task_id=request.task_id,
             )
+
+        encoded = raw_input.get("uri", "")
+        spec_dict = json.loads(base64.b64decode(encoded).decode("utf-8"))
 
         timeout_seconds = int(spec_dict.get("session_timeout_seconds", 0))
         if timeout_seconds <= 0:
@@ -786,50 +857,60 @@ def _execute_start_session(request) -> dict[str, Any]:
                 task_id=request.task_id,
             )
 
-        session_id = request.task_id  # use task_id as session_id for traceability
-        session_manager.create(session_id)
+        session_id = request.task_id
 
-        host_results_path, container_results_path = (
-            _create_session_results_directory(session_id)
-        )
-
-        # Build a minimal spec object from the dict for container launch.
         class _SpecProxy:
-            """Minimal duck-type proxy so _launch_interactive_ai_container
-            can read fields without requiring the full proto message."""
-            def __init__(self, d: dict):
-                scenario = d.get("scenario", {})
-                agent = d.get("agent", {})
-                survey = d.get("survey", {})
+            """Duck-type proxy so _launch_session_containers can read spec fields
+            without requiring a compiled proto message at HTTP-handler import time."""
+
+            def __init__(self, source_dict: dict) -> None:
+                scenario = source_dict.get("scenario", {})
+                agent = source_dict.get("agent", {})
+                survey = source_dict.get("survey", {})
 
                 class _Sub:
-                    def __init__(self, name="", survey_id=""):
+                    def __init__(self, name: str = "", survey_id: str = "") -> None:
                         self.name = name
                         self.survey_id = survey_id
 
                 self.scenario = _Sub(name=scenario.get("name", ""))
                 self.agent = _Sub(name=agent.get("name", ""))
                 self.survey = _Sub(survey_id=survey.get("survey_id", ""))
-                self.kpis = d.get("kpis", [])
-                self.session_timeout_seconds = d.get("session_timeout_seconds", 0)
+                self.kpis = source_dict.get("kpis", [])
+                self.session_timeout_seconds = source_dict.get(
+                    "session_timeout_seconds", 0
+                )
 
         spec_proxy = _SpecProxy(spec_dict)
+        session_manager.create(session_id)
 
-        container_id, gui_url = _launch_interactive_ai_container(
-            session_id, host_results_path, spec_proxy
+        host_results_path, container_results_path = (
+            _create_session_results_directory(session_id)
+        )
+
+        ia_container_id, hmisurveys_container_id, gui_url, survey_url = (
+            _launch_session_containers(session_id, host_results_path, spec_proxy)
         )
 
         session_manager.advance_phase(
             session_id,
             SessionPhase.GUI_READY,
             gui_url=gui_url,
-            container_id=container_id,
+            survey_url=survey_url,
+            container_id=ia_container_id,
+            survey_container_id=hmisurveys_container_id,
             volume_name=session_id,
         )
 
         polling_thread = threading.Thread(
             target=_run_session_polling_thread,
-            args=(session_id, container_id, container_results_path, timeout_seconds),
+            args=(
+                session_id,
+                ia_container_id,
+                hmisurveys_container_id,
+                container_results_path,
+                timeout_seconds,
+            ),
             daemon=True,
             name=f"hai-poll-{session_id[:8]}",
         )
