@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dutch-human-ai-interaction-testing"
+version = "0.1.0"
+description = "Dutch Node Human-AI Interaction Testing use case"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi==0.115.6",
+  "uvicorn==0.32.1",
+  "httpx==0.28.1",
+  "docker>=7.0.0",
+]
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["common*"]

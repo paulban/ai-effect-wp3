@@ -1,0 +1,50 @@
+services:
+  hai-testing-service:
+    image: paulban/aieffect-dutchnode-hai-testing:latest
+    build:
+      context: ..
+      dockerfile: human_ai_interaction_testing/Dockerfile
+    container_name: tef-hai-testing-service
+    ports:
+      - "8005:8080"
+      - "50055:50051"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8080
+      - SELF_URL=http://hai-testing-service:8080
+      - GRPC_HOST=hai-testing-service
+      - GRPC_PORT=50051
+      # Docker image to use for InteractiveAI sessions.
+      # TODO (OQ-4): Replace with the confirmed InteractiveAI image name/tag.
+      - HAI_INTERACTIVE_AI_IMAGE=${HAI_INTERACTIVE_AI_IMAGE:-interactiveai:latest}
+      # Port on the host where the InteractiveAI GUI will be served.
+      # TODO (OQ-5): Confirm the default port with AI4REALNET.
+      - HAI_INTERACTIVE_AI_PORT=${HAI_INTERACTIVE_AI_PORT:-8090}
+      # URL that the human operator opens in their browser.
+      # On Linux: replace host.docker.internal with the host machine IP.
+      - HAI_GUI_BASE_URL=${HAI_GUI_BASE_URL:-http://host.docker.internal:8090}
+      # Host-absolute path for per-session result directories.
+      # Must match the left side of the volume mount below.
+      - HAI_RESULTS_HOST_PATH=${HAI_RESULTS_HOST_PATH:-/tmp/hai_sessions}
+      # Path inside this container where the results directory is mounted.
+      - HAI_RESULTS_CONTAINER_PATH=/hai-sessions
+      - HAI_DOCKER_NETWORK=ai-effect-services
+    volumes:
+      # Docker socket — required for the service to manage InteractiveAI containers.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Shared results directory — InteractiveAI containers write here on survey submit.
+      # The host path must match HAI_RESULTS_HOST_PATH above.
+      - ${HAI_RESULTS_HOST_PATH:-/tmp/hai_sessions}:/hai-sessions
+    networks:
+      - services
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  services:
+    name: ai-effect-services
+    external: true
