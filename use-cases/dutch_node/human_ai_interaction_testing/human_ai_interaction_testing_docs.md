@@ -1,6 +1,6 @@
 # Human-AI Interaction Testing Service — Documentation
 
-*Auto-generated from source docstrings. Do not edit by hand.*
+*Auto-generated from source docstrings.*
 
 **Spec:** `human-ai-interaction-testing-spec.md`
 **Generated:** 2026-06-29
@@ -9,210 +9,198 @@
 
 ## Overview
 
-WP3 Dutch Node service that orchestrates human-operator evaluation sessions using
-the InteractiveAI framework and hmisurveys. An AI vendor submits a HumanAISessionSpec;
-the service launches an InteractiveAI Docker container; a human operator accesses the
-GUI via browser, operates a grid2op power grid simulation, and fills out an hmisurveys
-survey shown automatically at the end. Results (grid KPIs + survey outcomes) are written
-to a shared volume and returned to the caller via a polling gRPC API.
+WP3 Human-AI Interaction Testing service. Orchestrates per-session Docker containers
+for the InteractiveAI `powergrid-simulator-app` and the WP3-built `hai-survey-wrapper`,
+collects results from both tools via a shared host-mounted volume, and exposes gRPC
+and HTTP control-plane APIs for the WP3 orchestrator.
 
 ---
 
 ## Modules
 
-### `proto/human_ai_interaction_testing.proto`
-
-Defines the gRPC service and all message types for the Human-AI Interaction Testing
-data plane.
-
-**Service:** `HumanAIInteractionTestingService`
-
-| RPC | Input | Output |
-|-----|-------|--------|
-| `StartHumanAISession` | `HumanAISessionSpec` | `StartSessionResponse` |
-| `GetSessionStatus` | `SessionStatusRequest` | `SessionStatusResponse` |
-| `GetSessionResult` | `SessionResultRequest` | `SessionResultResponse` |
-
-**Session phases (enum `SessionPhase`):**
-`PENDING → GUI_READY → IN_PROGRESS → SURVEY → COMPLETED | FAILED`
-
-**Key messages:**
-- `HumanAISessionSpec` — what the AI vendor fills out (scenario, agent, survey, kpis, timeout)
-- `StartSessionResponse` — `session_id` + `gui_url`
-- `SessionStatusResponse` — `phase` + `error_message`
-- `SessionResultResponse` — `kpis` and `survey_outcomes` as `map<string, MetricValue>`
-
----
-
 ### `common/session_manager.py`
 
-Thread-safe registry of all active and completed testing sessions. Each session
-is a `SessionState` dataclass tracking phase, gui_url, container_id, results, and
-error_message. Phase transitions are monotonically enforced (FAILED is always
-reachable as a terminal failure state).
+Thread-safe session state manager tracking each testing session from PENDING through COMPLETED or FAILED.
 
-#### Classes
+#### `SessionPhase`
 
-##### `SessionPhase(IntEnum)`
+| Value | Meaning |
+|---|---|
+| `PENDING` (1) | Container not yet ready |
+| `GUI_READY` (2) | powergrid-simulator-app is up and browser-accessible |
+| `IN_PROGRESS` (3) | Operator is interacting with the GUI |
+| `SURVEY` (4) | Grid episode ended; hai-survey-wrapper survey is displayed |
+| `COMPLETED` (5) | Operator submitted survey; results written to volume |
+| `FAILED` (6) | Timeout elapsed or container error |
 
-Ordered session lifecycle phases. Values must only ever increase within a session.
-
-| Name | Value | Meaning |
-|------|-------|---------|
-| `PENDING` | 1 | Container not yet ready |
-| `GUI_READY` | 2 | InteractiveAI container up; browser-accessible |
-| `IN_PROGRESS` | 3 | Operator is interacting with the GUI |
-| `SURVEY` | 4 | Grid episode ended; survey is displayed |
-| `COMPLETED` | 5 | Operator submitted survey; results written |
-| `FAILED` | 6 | Timeout elapsed or container error |
-
-##### `SessionState`
-
-Dataclass holding all mutable state for a session. Never access fields outside
-a SessionManager lock-protected context unless the session is terminal.
-
-##### `SessionManager`
+#### `SessionManager` — key methods
 
 | Method | Description |
-|--------|-------------|
-| `create(session_id)` | Register a new session in PENDING; raises if duplicate |
-| `advance_phase(session_id, new_phase, **fields)` | Atomic phase transition with optional field updates; raises on backwards transitions |
-| `get(session_id)` | Return a shallow copy of the session state, or None |
-| `has_active_session()` | True if any non-terminal session exists (v1 constraint check) |
-
-#### Functions
-
-##### `get_session_manager() → SessionManager`
-
-Return the process-wide singleton. Used by gRPC servicer and HTTP control plane.
+|---|---|
+| `create(session_id)` | Register a new session in PENDING phase |
+| `advance_phase(session_id, new_phase, *, ...)` | Atomic phase transition with optional field updates |
+| `get(session_id)` | Return snapshot of session state |
+| `has_active_session()` | True if any non-terminal session exists (v1 guard) |
+| `get_active_session_id()` | Return the single active session_id or None (FR-12 fallback) |
 
 ---
 
 ### `common/session_operations.py`
 
-Core service logic: gRPC servicer, Docker container management, background result
-polling, timeout enforcement, and container cleanup.
+gRPC servicer, Docker container management, result polling, and the collect endpoint.
 
-#### Configuration (environment variables)
+#### Environment variables
 
-| Variable | Default | Notes |
-|----------|---------|-------|
-| `HAI_INTERACTIVE_AI_IMAGE` | *(required)* | InteractiveAI Docker image |
-| `HAI_INTERACTIVE_AI_PORT` | `8090` | Host port for GUI |
+| Variable | Default | Description |
+|---|---|---|
+| `HAI_INTERACTIVE_AI_IMAGE` | _(required)_ | `powergrid-simulator-app` Docker image |
+| `HAI_INTERACTIVE_AI_PORT` | `8090` | Host port for the simulator (container port 5000) |
 | `HAI_GUI_BASE_URL` | `http://host.docker.internal:8090` | Returned as `gui_url` |
-| `HAI_RESULTS_HOST_PATH` | `/tmp/hai_sessions` | Host-side results base dir |
-| `HAI_RESULTS_CONTAINER_PATH` | `/hai-sessions` | Container-side mount |
-| `HAI_DOCKER_NETWORK` | `ai-effect-services` | Docker network for InteractiveAI |
-| `HAI_RESULTS_FILENAME` | `session_result.json` | File written on survey submit |
+| `HAI_CAB_URL` | `http://frontend:80` | CAB platform URL forwarded to the simulator (FR-19) |
+| `HAI_HMISURVEYS_IMAGE` | _(required)_ | `hai-survey-wrapper` Docker image |
+| `HAI_HMISURVEYS_PORT` | `8091` | Host port for the survey wrapper (container port 80) |
+| `HAI_SURVEY_BASE_URL` | `http://host.docker.internal:8091` | Returned as `survey_url` |
+| `HAI_RESULTS_HOST_PATH` | `/tmp/hai_sessions` | Host path for per-session result dirs |
+| `HAI_RESULTS_CONTAINER_PATH` | `/hai-sessions` | Mount point inside this service container |
+| `HAI_DOCKER_NETWORK` | `ai-effect-services` | Docker network for sub-containers |
+| `HAI_KPIS_FILENAME` | `kpis.json` | Written by `POST /collect/session-trace` |
+| `HAI_SURVEY_FILENAME` | `survey_outcomes.json` | Written by hai-survey-wrapper |
 
-#### Classes
+#### gRPC RPCs
 
-##### `HumanAIInteractionTestingServicer`
+- **`StartHumanAISession`** — Launch both Docker containers, advance to GUI_READY, start polling thread. Returns `session_id`, `gui_url`, `survey_url` synchronously.
+- **`GetSessionStatus`** — Return the current `SessionPhase`.
+- **`GetSessionResult`** — Return `kpis` and `survey_outcomes` maps for a COMPLETED session.
 
-gRPC servicer implementing the three RPCs.
-
-| Method | Behaviour |
-|--------|-----------|
-| `StartHumanAISession` | Validates spec, checks single-session constraint, launches Docker container, starts polling thread, returns session_id + gui_url immediately |
-| `GetSessionStatus` | Reads phase from SessionManager; maps to proto enum |
-| `GetSessionResult` | Returns kpis + survey_outcomes if COMPLETED; FAILED_PRECONDITION otherwise |
-
-#### Functions
-
-##### `start_grpc_server() → grpc.Server`
-
-Start the gRPC data plane server on port `GRPC_PORT` (default: 50051).
-
-##### `_launch_interactive_ai_container(session_id, host_results_path, spec) → (container_id, gui_url)`
-
-Launch InteractiveAI in web-app mode with the results directory mounted.
-Passes scenario/agent/survey/kpi config via environment variables.
-
-##### `_run_session_polling_thread(session_id, container_id, container_session_dir, timeout_seconds)`
-
-Background daemon thread. Polls the results file every 5 seconds, transitions
-to COMPLETED on file detection, FAILED on timeout. Always cleans up the container
-on exit (FR-13).
-
-##### `_parse_results_file(results_path) → (kpis, survey_outcomes)`
-
-Parse the JSON file written by InteractiveAI. Expects `{"kpis": {...}, "survey_outcomes": {...}}`.
-Keys are taken as-is — never hardcoded.
-
-##### `_metric_value_from_any(value) → MetricValue`
-
-Convert Python values to MetricValue protobuf messages. Mirrors benchmarking service
-for result consistency.
-
----
-
-### `common/control_interface.py`
-
-FastAPI HTTP control plane consumed by the WP3 orchestrator.
-
-**Endpoints:**
+#### HTTP endpoints
 
 | Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/control/execute` | Trigger a named method (StartHumanAISession) |
-| `GET` | `/control/status/{task_id}` | Poll orchestrator-status string + progress |
-| `GET` | `/control/output/{task_id}` | Get gRPC DataReference when COMPLETED |
-| `GET` | `/health` | Health check (returns `{"status": "ok"}`) |
+|---|---|---|
+| `POST` | `/control/execute` | Execute a named method (`StartHumanAISession`) |
+| `GET` | `/control/status/{task_id}` | Poll orchestrator status |
+| `GET` | `/control/output/{task_id}` | Get gRPC result reference |
+| `POST` | `/collect/session-trace` | Receive InteractiveAI session JSON; write `kpis.json` (FR-12) |
+| `GET` | `/health` | Health check |
 
-**Phase → orchestrator status mapping:**
+#### `_handle_collect_session_trace(body) -> tuple[dict, int]`
 
-| Phase | Status | Progress |
-|-------|--------|----------|
-| PENDING | pending | 0 |
-| GUI_READY | running | 20 |
-| IN_PROGRESS | running | 50 |
-| SURVEY | running | 80 |
-| COMPLETED | complete | 100 |
-| FAILED | failed | 0 |
+Receives the InteractiveAI historic-session JSON, resolves the active session, and
+writes `kpis.json` to `RESULTS_CONTAINER_BASE_PATH / session_id / KPIS_FILENAME`.
+
+Session ID resolution: prefers `body["wp3_session_id"]` (FR-20, OQ-1); falls back to
+the single active session (`get_active_session_id()`) under the v1 single-session constraint.
+
+Returns `({"status": "saved", "session_id": ...}, 200)` on success, or an error tuple.
 
 ---
 
-### `main.py`
+### `hai-survey-wrapper/app.py`
 
-Service entrypoint. Starts gRPC server then HTTP server (blocking).
+Flask sidecar inside the `hai-survey-wrapper` Docker image. Proxied by nginx at `/api/`.
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/healthz` | Returns `{"status": "ok"}` HTTP 200 (FR-17) |
+| `POST /api/save_results` | Receives survey JSON; writes `survey_outcomes.json` (FR-18) |
+
+Environment variables: `HAI_RESULTS_PATH` (default `/results`), `HAI_SURVEY_FILENAME` (default `survey_outcomes.json`), `FLASK_PORT` (default `5000`).
+
+### `hai-survey-wrapper/static/index.html`
+
+Wrapper page: embeds `surveychainer.html` in a full-screen iframe, listens for
+`window.postMessage` from the surveychainer on survey completion, POSTs to `/api/save_results`.
+
+---
+
+## Session lifecycle
+
+```
+StartHumanAISession
+  ├─ Launch powergrid-simulator-app → gui_url (host port 8090)
+  ├─ Launch hai-survey-wrapper      → survey_url (host port 8091)
+  ├─ Advance to GUI_READY
+  └─ Start polling thread (5s interval)
+       │
+       ├─ Operator uses InteractiveAI GUI (episodes, AI recommendations)
+       ├─ Episode ends → operator logs out of InteractiveAI frontend
+       │     └─ traceSessionExport.ts POSTs to POST /collect/session-trace
+       │           └─ kpis.json written to shared volume
+       │
+       ├─ Operator navigates to survey_url
+       ├─ Completes surveychainer → wrapper page POSTs to /api/save_results
+       │           └─ survey_outcomes.json written to shared volume
+       │
+       └─ Both files present → COMPLETED (FR-10)
+            Both containers stopped and removed (FR-14)
+            Results available via GetSessionResult gRPC
+```
+
+---
+
+## Infrastructure
+
+### `docker-compose-all.yml`
+
+One `docker compose up` starts the full stack: WP3 HAI testing service + full InteractiveAI CAB platform (15 services).
+
+**Prerequisites:**
+```bash
+docker network create ai-effect-services
+```
+
+**Build `hai-survey-wrapper`** (from `human_ai_interaction_testing/`):
+```bash
+docker build -f hai-survey-wrapper/Dockerfile -t hai-survey-wrapper:latest .
+```
+
+**Build `powergrid-simulator-app`** (from `InteractiveAI/usecases_examples/PowerGrid/`):
+```bash
+docker build -t powergrid-simulator-app:latest .
+```
+
+**Rebuild InteractiveAI frontend** (after adding `VITE_WP3_COLLECT_URL`, FR-13):
+The `frontend` service in `docker-compose-all.yml` includes `VITE_WP3_COLLECT_URL` as a build arg. Set it in `.env`:
+```
+VITE_WP3_COLLECT_URL=http://hai-testing-service:8080
+```
 
 ---
 
 ## Requirements Coverage
 
 | Requirement | Status | Implemented in |
-|-------------|--------|---------------|
-| FR-01 | ✓ | `session_operations.py: StartHumanAISession`, `_launch_interactive_ai_container()` |
-| FR-02 | ✓ | `session_manager.py: SessionManager.advance_phase()`, `GetSessionStatus` |
-| FR-03 | ✓ | `session_operations.py: GetSessionResult` |
-| FR-04 | ✓ | `proto/human_ai_interaction_testing.proto`, `StartHumanAISession` validation |
-| FR-05 | ✓ | `session_operations.py`: empty `scenario.name` uses InteractiveAI default |
-| FR-06 | ✓ | `session_operations.py`: empty `agent.name` uses built-in agent |
-| FR-07 | ⚠ TODO | Depends on OQ-1 (InteractiveAI survey-submit hook). Survey display is a feature of the InteractiveAI container itself; the WP3 service assumes it works correctly once the container is running. |
-| FR-08 | ✓ | `session_operations.py: _parse_results_file()` |
-| FR-09 | ✓ | `session_operations.py: _run_session_polling_thread()` (5s interval) |
-| FR-10 | ✓ | `session_operations.py: _run_session_polling_thread()` timeout watchdog |
-| FR-11 | ✓ | `session_operations.py: _metric_value_from_any()`, `GetSessionResult` response |
-| FR-12 | ✓ | `dockerinfo.json`, `blueprint.json`, `docker-compose-all.yml` |
-| FR-13 | ✓ | `session_operations.py: _stop_and_remove_container()` in finally block |
-| FR-14 | ✓ | `session_manager.py: SessionState.error_message`, `GetSessionStatus` response |
-| FR-15 | ✓ | `session_operations.py: _launch_interactive_ai_container()` — web-app mode launch; `Dockerfile` comment; `README.md` |
-| NFR-01 | ✓ | `README.md`: Windows issues documented with WSL2 workaround |
-| NFR-02 | ✓ | Web-app mode enforced via launch flags in `_launch_interactive_ai_container()` |
-| NFR-03 | ✓ | `session_manager.py: has_active_session()` checked in `StartHumanAISession` |
-| NFR-04 | ✓ | `control_interface.py: /health` endpoint; structured logging in all phase transitions |
-| NFR-05 | ✓ | `_run_session_polling_thread()` transitions to FAILED with log on timeout |
+|---|---|---|
+| FR-01 | ✓ | `_launch_session_containers()` — powergrid-simulator-app, `ports={"5000/tcp": port}` |
+| FR-02 | ✓ | `_launch_session_containers()` — hai-survey-wrapper, `ports={"80/tcp": port}` |
+| FR-03 | ✓ | Both containers receive `volumes={host_path: {"/results", "rw"}}` |
+| FR-04 | ✓ | `StartSessionResponse.gui_url` returned synchronously |
+| FR-05 | ✓ | `StartSessionResponse.survey_url` returned synchronously |
+| FR-06 | ✓ | `GetSessionStatus` gRPC |
+| FR-07 | ✓ | `GetSessionResult` gRPC |
+| FR-08 | ✓ | `_handle_collect_session_trace()` writes `kpis.json` |
+| FR-09 | ✓ | `hai-survey-wrapper/app.py: save_survey_results()` writes `survey_outcomes.json` |
+| FR-10 | ✓ | `_run_session_polling_thread()` — both files required |
+| FR-11 | ✓ | `_run_session_polling_thread()` — timeout → FAILED |
+| FR-12 | ✓ | `_handle_collect_session_trace()` + `create_collect_router()` at `POST /collect/session-trace` |
+| FR-13 | ✓ | `traceSessionExport.ts` — `fetch()` POST after `download()` when `VITE_WP3_COLLECT_URL` is set |
+| FR-14 | ✓ | `_run_session_polling_thread()` finally block — both containers stopped/removed |
+| FR-15 | ✓ | `docker-compose-all.yml` — all CAB services with corrected paths |
+| FR-16 | ✓ | `hai-survey-wrapper/Dockerfile`, `static/index.html`, `nginx.conf`, `supervisord.conf` |
+| FR-17 | ✓ | `hai-survey-wrapper/app.py: health_check()` |
+| FR-18 | ✓ | `hai-survey-wrapper/app.py: save_survey_results()` |
+| FR-19 | ✓ | `CAB_PLATFORM_URL` constant; forwarded as `CAB_API_URL` env var to simulator container |
+| FR-20 | ⚠ TODO | Blocked by OQ-1 — see Open Items |
 
 ---
 
 ## Open Items
 
-| Item | Reason |
-|------|--------|
-| FR-07 (survey auto-display) | Depends on OQ-1: InteractiveAI must display hmisurveys automatically after the grid episode ends. WP3 service assumes this is handled inside the container; no WP3-side code change needed once OQ-1 is confirmed. |
-| OQ-1 | Confirm/add survey-submit hook in InteractiveAI that writes `session_result.json` |
-| OQ-2 | Enumerate hmisurveys output fields; update README and test fixtures |
-| OQ-3 | Enumerate InteractiveAI KPI names; update README and test fixtures |
-| OQ-4 | Set `HAI_INTERACTIVE_AI_IMAGE` in `.env` / `docker-compose-all.yml` |
-| OQ-5 | Confirm InteractiveAI web-app port; update `HAI_INTERACTIVE_AI_PORT` default |
-| OQ-6 | Verify Docker socket accessibility in deployment; update setup docs |
+**OQ-1 (blocks FR-20):** Session ID linking. Proposed: append `?session_id=<id>` to `gui_url`; frontend reads `window.location.search` and adds `wp3_session_id` to the POST body. Until resolved, the v1 single-active-session fallback is used in `_handle_collect_session_trace`.
+
+**OQ-2:** Confirm `powergrid-simulator-app` internal port is 5000. Fix `_launch_session_containers` port mapping if different.
+
+**OQ-3:** Confirm `hai-survey-wrapper` nginx internal port is 80 (as declared in `nginx.conf` and Dockerfile `EXPOSE 80`).
+
+**OQ-4:** Which surveychainer parameters (pid, cond) should `static/index.html` pre-fill from the session context?
+
+**Flask sidecar tests (FR-17/18):** 5 tests skipped in the WP3 service venv (Flask not installed). Enable with `pip install flask` or test via `docker run hai-survey-wrapper:latest`.

@@ -1,30 +1,41 @@
 """gRPC servicer, Docker container management, and result polling for Human-AI Testing.
 
 This module owns the three gRPC RPCs and all supporting logic for the
-two-instances design: InteractiveAI (grid simulation) and hmisurveys (survey)
-run as **independent Docker containers** launched together at session start.
-The operator receives two browser URLs — gui_url for the grid GUI and
-survey_url for the questionnaire — and navigates between them manually.
+two-instances design: powergrid-simulator-app (grid simulation) and
+hai-survey-wrapper (survey) run as **independent Docker containers** launched
+together at session start.  The operator receives two browser URLs — gui_url
+for the grid GUI and survey_url for the questionnaire — and navigates between
+them manually.
 
-Each container writes its own result file to a shared host directory:
-  - InteractiveAI  →  kpis.json           (on grid episode end)        FR-08
-  - hmisurveys     →  survey_outcomes.json (on survey submit)           FR-09
+Result files land in the shared per-session directory on the host volume:
+  - kpis.json            written by POST /collect/session-trace (FR-08, FR-12)
+                         when the InteractiveAI frontend POSTs the session trace
+                         to WP3 on operator logout (FR-13)
+  - survey_outcomes.json written by the hai-survey-wrapper Flask sidecar (FR-09, FR-18)
+                         when the operator submits the survey and the wrapper page
+                         POSTs to its local /api/save_results endpoint
 
 The background polling thread checks for BOTH files (FR-10) and only
-transitions to COMPLETED when both are present. Either container writing
-alone is not sufficient.
+transitions to COMPLETED when both are present. Either file alone is not
+sufficient.
 
 Environment variables consumed (all optional, defaults documented below):
 
-  InteractiveAI container:
-    HAI_INTERACTIVE_AI_IMAGE    Docker image (no default — must be set; build locally)
-    HAI_INTERACTIVE_AI_PORT     Host port for the grid GUI  (default: 8090)
-    HAI_GUI_BASE_URL            Returned as gui_url          (default: http://host.docker.internal:8090)
+  powergrid-simulator-app container (FR-01):
+    HAI_INTERACTIVE_AI_IMAGE    Docker image for powergrid-simulator-app
+                                (no default — must be set; build from InteractiveAI repo)
+    HAI_INTERACTIVE_AI_PORT     Host port for the grid GUI Flask app (default: 8090)
+                                Maps to container port 5000 (Flask default)
+    HAI_GUI_BASE_URL            Returned as gui_url (default: http://host.docker.internal:8090)
+    HAI_CAB_URL                 URL of the pre-running CAB platform passed to the
+                                simulator container (FR-19, default: http://frontend:80)
 
-  hmisurveys container:
-    HAI_HMISURVEYS_IMAGE        Docker image (no default — must be set; build locally)
-    HAI_HMISURVEYS_PORT         Host port for the survey UI (default: 8091)
-    HAI_SURVEY_BASE_URL         Returned as survey_url       (default: http://host.docker.internal:8091)
+  hai-survey-wrapper container (FR-02):
+    HAI_HMISURVEYS_IMAGE        Docker image for hai-survey-wrapper
+                                (no default — must be set; build from hai-survey-wrapper/)
+    HAI_HMISURVEYS_PORT         Host port for the survey wrapper nginx (default: 8091)
+                                Maps to container port 80 (nginx default)
+    HAI_SURVEY_BASE_URL         Returned as survey_url (default: http://host.docker.internal:8091)
 
   Shared:
     HAI_RESULTS_HOST_PATH       Absolute host path for per-session result dirs
@@ -35,13 +46,14 @@ Environment variables consumed (all optional, defaults documented below):
                                 (default: ai-effect-services)
     GRPC_PORT                   gRPC server port (default: 50051)
 
-  Result filenames (written by each tool — see OQ-1 and OQ-2):
-    HAI_KPIS_FILENAME           Written by InteractiveAI on episode end
+  Result filenames:
+    HAI_KPIS_FILENAME           Written by POST /collect/session-trace (FR-12)
                                 (default: kpis.json)
-    HAI_SURVEY_FILENAME         Written by hmisurveys on survey submit
+    HAI_SURVEY_FILENAME         Written by hai-survey-wrapper /api/save_results (FR-18)
                                 (default: survey_outcomes.json)
 
-Spec coverage: FR-01, FR-03, FR-07, FR-08, FR-09, FR-10, FR-11, FR-12, FR-14, FR-16
+Spec coverage: FR-01, FR-02, FR-03, FR-07, FR-08, FR-09, FR-10, FR-11,
+               FR-12, FR-14, FR-16, FR-19
 """
 
 from __future__ import annotations
@@ -83,8 +95,13 @@ GUI_BASE_URL: str = os.environ.get(
     f"http://host.docker.internal:{INTERACTIVE_AI_HOST_PORT}",
 )
 
+# URL of the pre-running InteractiveAI CAB platform, forwarded to the simulator
+# container so it can connect to the recommendation, event, and historic services.
+# Default points to the CAB frontend container on the shared Docker network (FR-19).
+CAB_PLATFORM_URL: str = os.environ.get("HAI_CAB_URL", "http://frontend:80")
+
 # ---------------------------------------------------------------------------
-# Environment-driven configuration — hmisurveys container
+# Environment-driven configuration — hai-survey-wrapper container
 # ---------------------------------------------------------------------------
 
 # Docker image for hmisurveys — build locally from AI4REALNET/hmisurveys.
@@ -314,11 +331,16 @@ def _launch_session_containers(
     # which maps to host_results_path on the host filesystem (FR-08, FR-09).
     shared_volume_mount = {host_results_path: {"bind": "/results", "mode": "rw"}}
 
-    # --- InteractiveAI container (FR-01, FR-16) ---
+    # --- powergrid-simulator-app container (FR-01, FR-19) ---
+    # The simulator Flask app runs on port 5000 inside the container.
+    # It connects to the pre-running CAB platform via CAB_PLATFORM_URL (FR-19).
     interactive_ai_env: dict[str, str] = {
         "HAI_SESSION_ID": session_id,
         "HAI_RESULTS_PATH": "/results",
         "HAI_KPIS_FILENAME": KPIS_FILENAME,
+        # CAB platform URL so the simulator can reach recommendation, event,
+        # and historic services on the shared Docker network (FR-19).
+        "CAB_API_URL": CAB_PLATFORM_URL,
     }
 
     scenario_name = spec.scenario.name if spec.scenario.name else ""
@@ -331,12 +353,13 @@ def _launch_session_containers(
     if spec.kpis:
         interactive_ai_env["HAI_KPIS"] = ",".join(spec.kpis)
 
-    # TODO (OQ-1): Confirm the env var names InteractiveAI uses to locate the
-    # results path and KPI filename once the export hook is implemented.
     logger.info(
-        "Launching InteractiveAI container: session=%s image=%s port=%s",
+        "Launching powergrid-simulator-app container: session=%s image=%s port=%s",
         session_id, INTERACTIVE_AI_IMAGE, INTERACTIVE_AI_HOST_PORT,
     )
+    # powergrid-simulator-app (Flask) listens on port 5000 inside the container
+    # (confirmed from InteractiveAI/usecases_examples/PowerGrid/docker-compose.yml:
+    # "5100:5000"). Mapped to INTERACTIVE_AI_HOST_PORT on the host (OQ-2).
     interactive_ai_container = docker_client.containers.run(
         INTERACTIVE_AI_IMAGE,
         detach=True,
@@ -344,7 +367,7 @@ def _launch_session_containers(
         network=DOCKER_NETWORK,
         environment=interactive_ai_env,
         volumes=shared_volume_mount,
-        ports={"8080/tcp": INTERACTIVE_AI_HOST_PORT},
+        ports={"5000/tcp": INTERACTIVE_AI_HOST_PORT},
         labels={"hai.session_id": session_id, "hai.role": "interactive-ai"},
     )
     logger.info(
@@ -352,7 +375,9 @@ def _launch_session_containers(
         interactive_ai_container.id[:12], session_id,
     )
 
-    # --- hmisurveys container (FR-07) ---
+    # --- hai-survey-wrapper container (FR-02, FR-16) ---
+    # The WP3-built wrapper image runs nginx on port 80 (static survey files)
+    # with a Flask sidecar on port 5000 (internal only, proxied via nginx /api/).
     survey_env: dict[str, str] = {
         "HAI_SESSION_ID": session_id,
         "HAI_RESULTS_PATH": "/results",
@@ -363,12 +388,12 @@ def _launch_session_containers(
     if survey_id:
         survey_env["HAI_SURVEY_ID"] = survey_id
 
-    # TODO (OQ-2): Confirm the env var names hmisurveys uses to locate the
-    # results path and survey filename once the export hook is implemented.
     logger.info(
-        "Launching hmisurveys container: session=%s image=%s port=%s",
+        "Launching hai-survey-wrapper container: session=%s image=%s port=%s",
         session_id, HMISURVEYS_IMAGE, HMISURVEYS_HOST_PORT,
     )
+    # hai-survey-wrapper nginx listens on port 80 inside the container.
+    # Mapped to HMISURVEYS_HOST_PORT on the host (OQ-3).
     hmisurveys_container = docker_client.containers.run(
         HMISURVEYS_IMAGE,
         detach=True,
@@ -376,7 +401,7 @@ def _launch_session_containers(
         network=DOCKER_NETWORK,
         environment=survey_env,
         volumes=shared_volume_mount,
-        ports={"8080/tcp": HMISURVEYS_HOST_PORT},
+        ports={"80/tcp": HMISURVEYS_HOST_PORT},
         labels={"hai.session_id": session_id, "hai.role": "hmisurveys"},
     )
     logger.info(
@@ -942,3 +967,79 @@ def _execute_start_session(request) -> Any:
 session_handlers: dict = {
     "StartHumanAISession": _execute_start_session,
 }
+
+
+# ---------------------------------------------------------------------------
+# POST /collect/session-trace handler (FR-12)
+# ---------------------------------------------------------------------------
+
+def _handle_collect_session_trace(body: dict) -> tuple[dict, int]:
+    """Write kpis.json to the active session's results directory (FR-12, FR-08).
+
+    Called when the InteractiveAI frontend POSTs the historic-session JSON to
+    POST /collect/session-trace on operator logout (FR-13). The body is the full
+    session trace produced by traceSessionExport.ts.
+
+    Session ID resolution (OQ-1):
+      - If the body contains a 'wp3_session_id' key (added by FR-20 once OQ-1
+        is resolved), that session is used directly.
+      - Fallback: the single non-terminal session is used (v1 single-session
+        constraint means exactly one active session exists at a time).
+
+    Args:
+        body: Parsed JSON body from the POST request — the full InteractiveAI
+              historic-session dict (sessionId, userLogin, startedAt, kpis, traces).
+
+    Returns:
+        A tuple (response_dict, http_status_code) — 200 on success, 404 if no
+        active session is found, 500 on filesystem write failure.
+    """
+    session_manager = get_session_manager()
+
+    # TODO (OQ-1): When FR-20 is implemented, the frontend includes 'wp3_session_id'
+    # in the POST body (read from the ?session_id= query param on gui_url). Until then,
+    # fall back to the single active session.
+    wp3_session_id: str | None = body.get("wp3_session_id")
+
+    if wp3_session_id:
+        target_session_id = wp3_session_id
+        state = session_manager.get(target_session_id)
+        if state is None:
+            logger.warning(
+                "POST /collect/session-trace: session not found: %s", target_session_id
+            )
+            return {"error": f"Session not found: {target_session_id}"}, 404
+    else:
+        # v1 fallback: look up the single non-terminal session.
+        target_session_id = session_manager.get_active_session_id()
+        if target_session_id is None:
+            logger.warning(
+                "POST /collect/session-trace: no active session found "
+                "(body had no wp3_session_id)"
+            )
+            return {"error": "No active session found"}, 404
+
+    container_session_dir = Path(RESULTS_CONTAINER_BASE_PATH) / target_session_id
+    kpis_output_path = container_session_dir / KPIS_FILENAME
+
+    try:
+        kpis_output_path.write_text(json.dumps(body, indent=2), encoding="utf-8")
+        logger.info(
+            "kpis.json written: session=%s path=%s keys=%d",
+            target_session_id,
+            kpis_output_path,
+            len(body),
+        )
+        return {"status": "saved", "session_id": target_session_id}, 200
+
+    except OSError as exc:
+        logger.exception(
+            "Failed to write kpis.json: session=%s path=%s",
+            target_session_id,
+            kpis_output_path,
+        )
+        return {"error": f"Failed to write kpis.json: {exc}"}, 500
+
+
+# Exported for registration in control_interface.create_app() via common/__init__.py.
+collect_session_trace = _handle_collect_session_trace

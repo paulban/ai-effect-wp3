@@ -1,4 +1,7 @@
 services:
+  # ===========================================================================
+  # WP3 Human-AI Interaction Testing Service
+  # ===========================================================================
   hai-testing-service:
     image: paulban/aieffect-dutchnode-hai-testing:latest
     build:
@@ -14,23 +17,24 @@ services:
       - SELF_URL=http://hai-testing-service:8080
       - GRPC_HOST=hai-testing-service
       - GRPC_PORT=50051
-      # --- InteractiveAI container ---
-      # Docker image for the InteractiveAI grid simulation GUI.
-      # TODO (OQ-4): Build locally from AI4REALNET/InteractiveAI and set this.
-      - HAI_INTERACTIVE_AI_IMAGE=${HAI_INTERACTIVE_AI_IMAGE:-interactiveai:latest}
-      # Host port where the InteractiveAI web-app will be served.
-      # TODO (OQ-5): Confirm the correct port by running InteractiveAI locally.
+      # --- powergrid-simulator-app (per-session, launched by Docker SDK) ---
+      # Image for the powergrid-simulator-app (Case 2 / web-app mode, Flask on port 5000).
+      # Build locally from InteractiveAI/usecases_examples/PowerGrid/ and set this.
+      - HAI_INTERACTIVE_AI_IMAGE=${HAI_INTERACTIVE_AI_IMAGE:-powergrid-simulator-app:latest}
+      # Host port where the per-session powergrid-simulator-app will be served.
       - HAI_INTERACTIVE_AI_PORT=${HAI_INTERACTIVE_AI_PORT:-8090}
-      # URL returned as gui_url. On Linux: replace host.docker.internal with host IP.
+      # URL returned as gui_url. On Linux: replace host.docker.internal with the host IP.
       - HAI_GUI_BASE_URL=${HAI_GUI_BASE_URL:-http://host.docker.internal:8090}
-      # --- hmisurveys container ---
-      # Docker image for the hmisurveys survey UI.
-      # TODO (OQ-4): Build locally from AI4REALNET/hmisurveys and set this.
-      - HAI_HMISURVEYS_IMAGE=${HAI_HMISURVEYS_IMAGE:-hmisurveys:latest}
-      # Host port where the hmisurveys survey UI will be served.
-      # TODO (OQ-7): Confirm the correct port by running hmisurveys locally.
+      # URL of the pre-running CAB platform, passed to the simulator container (FR-19).
+      - HAI_CAB_URL=${HAI_CAB_URL:-http://frontend:80}
+      # --- hai-survey-wrapper (per-session, launched by Docker SDK) ---
+      # Image for the WP3-built survey wrapper. Build with:
+      #   docker build -f hai-survey-wrapper/Dockerfile -t hai-survey-wrapper:latest .
+      # from the human_ai_interaction_testing/ directory.
+      - HAI_HMISURVEYS_IMAGE=${HAI_HMISURVEYS_IMAGE:-hai-survey-wrapper:latest}
+      # Host port where the per-session survey wrapper will be served (nginx on port 80).
       - HAI_HMISURVEYS_PORT=${HAI_HMISURVEYS_PORT:-8091}
-      # URL returned as survey_url. On Linux: replace host.docker.internal with host IP.
+      # URL returned as survey_url.
       - HAI_SURVEY_BASE_URL=${HAI_SURVEY_BASE_URL:-http://host.docker.internal:8091}
       # --- Shared results directory ---
       # Host-absolute path for per-session result directories.
@@ -42,9 +46,8 @@ services:
     volumes:
       # Docker socket — required for the service to launch and remove sub-containers.
       - /var/run/docker.sock:/var/run/docker.sock
-      # Shared results directory — both InteractiveAI (kpis.json) and
-      # hmisurveys (survey_outcomes.json) write here; WP3 polls for both files.
-      # The host path must match HAI_RESULTS_HOST_PATH above.
+      # Shared results directory — kpis.json (written by POST /collect/session-trace)
+      # and survey_outcomes.json (written by hai-survey-wrapper) land here.
       - ${HAI_RESULTS_HOST_PATH:-/tmp/hai_sessions}:/hai-sessions
     networks:
       - services
@@ -54,6 +57,420 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # ===========================================================================
+  # InteractiveAI CAB Platform (pre-deployed, persistent)
+  # All services below must be running before StartHumanAISession is called.
+  # Source paths are relative to human_ai_interaction_testing/ (this file's location).
+  # Before running: docker network create ai-effect-services
+  # Also required: USER_ID and USER_GID env vars for OperatorFabric services.
+  # ===========================================================================
+
+  cabcontext:
+    container_name: cab_context
+    image: cab/cabcontext
+    build:
+      context: ./InteractiveAI/backend
+      dockerfile: Context-Service-Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db_postgres_context:5432/cab-context
+      - FLASK_APP=app:create_app('dev')
+      - PYTHONPATH=/code
+      - FLASK_ENV=development
+      - URL_INTROSPECT=http://frontend:80/auth/check_token
+      - KEYCLOAK_SERVER_URL=http://frontend:80/auth/
+      - OPFAB_CLIENT_SECRET=opfab-keycloak-secret
+      - TZ=UTC
+    restart: unless-stopped
+    command: sh -c "./entrypoint.sh"
+    ports:
+      - "5100:5000"
+    volumes:
+      - ./InteractiveAI/backend/context-service:/code
+    depends_on:
+      - db_postgres_context
+    networks:
+      - services
+
+  cabevent:
+    container_name: cab_event
+    image: cab/cabevent
+    build:
+      context: ./InteractiveAI/backend
+      dockerfile: Event-Service-Dockerfile
+    restart: unless-stopped
+    environment:
+      - CARDS_PUBLICATION_SERVICE=http://cards-publication:8080
+      - GATEWAY_SERVICE=http://frontend:80
+      - HISTORIC_SERVICE=http://cabhistoric:5000
+      - DATABASE_URL=postgresql://postgres:postgres@db_postgres_event:5432/cab-event
+      - FLASK_APP=app:create_app('dev')
+      - PYTHONPATH=/code
+      - FLASK_ENV=development
+      - URL_INTROSPECT=http://frontend:80/auth/check_token
+      - KEYCLOAK_SERVER_URL=http://frontend:80/auth/
+      - OPFAB_CLIENT_SECRET=opfab-keycloak-secret
+      - TZ=UTC
+    command: sh -c "./entrypoint.sh"
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./InteractiveAI/backend/event-service:/code
+    depends_on:
+      - db_postgres_event
+    networks:
+      - services
+
+  cabhistoric:
+    container_name: cabhistoric
+    image: cab/cabhistoric
+    build:
+      context: ./InteractiveAI/backend
+      dockerfile: Historic-Service-Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db_postgres_historic:5432/cab-historic
+      - FLASK_APP=app:create_app('dev')
+      - FLASK_ENV=development
+      - PYTHONPATH=/my_app
+      - URL_INTROSPECT=http://frontend:80/auth/check_token
+      - KEYCLOAK_SERVER_URL=http://frontend:80/auth/
+      - OPFAB_CLIENT_SECRET=opfab-keycloak-secret
+      - TZ=UTC
+    restart: unless-stopped
+    command: sh -c "./entrypoint.sh"
+    ports:
+      - "5200:5000"
+    volumes:
+      - ./InteractiveAI/backend/historic-service:/code
+    depends_on:
+      - db_postgres_historic
+    networks:
+      - services
+
+  cabrecommendation:
+    container_name: cab_recommendation
+    image: cab/cabrecommendation
+    build:
+      context: ./InteractiveAI/backend
+      dockerfile: Recommendation-Service-Dockerfile
+    restart: unless-stopped
+    environment:
+      - GATEWAY_SERVICE=http://frontend:80
+      - DATABASE_URL=postgresql://postgres:postgres@db_postgres_recommendation:5432/cab-recommendation
+      - FLASK_APP=app:create_app('dev')
+      - PYTHONPATH=/my_app
+      - FLASK_ENV=development
+      - URL_INTROSPECT=http://frontend:80/auth/check_token
+      - KEYCLOAK_SERVER_URL=http://frontend:80/auth/
+      - OPFAB_CLIENT_SECRET=opfab-keycloak-secret
+      - TZ=UTC
+      - RL_AGENT_API_URL=${RL_AGENT_API_URL}
+      - RL_AGENT_API_TOKEN=${RL_AGENT_API_TOKEN}
+    command: sh -c "./entrypoint.sh"
+    ports:
+      - "5400:5000"
+    volumes:
+      - ./InteractiveAI/backend/recommendation-service:/my_app
+    depends_on:
+      - db_postgres_recommendation
+    networks:
+      - services
+
+  cabcapitalization:
+    container_name: cab_capitalization
+    image: cab/cabcapitalization
+    build:
+      context: ./InteractiveAI/backend
+      dockerfile: Capitalization-Service-Dockerfile
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db_postgres_capitalization:5432/cab-capitalization
+      - FLASK_APP=app:create_app('dev')
+      - FLASK_ENV=development
+      - PYTHONPATH=/my_app
+      - URL_INTROSPECT=http://frontend:80/auth/check_token
+      - KEYCLOAK_SERVER_URL=http://frontend:80/auth/
+      - OPFAB_CLIENT_SECRET=opfab-keycloak-secret
+      - TZ=UTC
+    restart: unless-stopped
+    command: sh -c "./entrypoint.sh"
+    ports:
+      - "5500:5000"
+    volumes:
+      - ./InteractiveAI/backend/capitalization-service:/code
+    depends_on:
+      - db_postgres_capitalization
+    networks:
+      - services
+
+  # --- CAB PostgreSQL databases ---
+
+  db_postgres_context:
+    container_name: db_postgres_context
+    image: postgres:14.7
+    environment:
+      - POSTGRES_HOST_AUTH_METHOD=trust
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=cab-context
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_context_data:/var/lib/postgresql/data/
+    networks:
+      - services
+
+  db_postgres_event:
+    container_name: db_postgres_event
+    image: postgres:14.7
+    environment:
+      - POSTGRES_HOST_AUTH_METHOD=trust
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=cab-event
+    ports:
+      - "5436:5432"
+    volumes:
+      - postgres_event_data:/var/lib/postgresql/data/
+    networks:
+      - services
+
+  db_postgres_historic:
+    container_name: db_postgres_historic
+    image: postgres:14.7
+    environment:
+      - POSTGRES_HOST_AUTH_METHOD=trust
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=cab-historic
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_historic_data:/var/lib/postgresql/data/
+    networks:
+      - services
+
+  db_postgres_recommendation:
+    container_name: db_postgres_recommendation
+    image: postgres:14.7
+    environment:
+      - POSTGRES_HOST_AUTH_METHOD=trust
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=cab-recommendation
+    ports:
+      - "5437:5432"
+    volumes:
+      - postgres_recommendation_data:/var/lib/postgresql/data/
+    networks:
+      - services
+
+  db_postgres_capitalization:
+    container_name: db_postgres_capitalization
+    image: postgres:14.7
+    environment:
+      - POSTGRES_HOST_AUTH_METHOD=trust
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=cab-capitalization
+    ports:
+      - "5438:5432"
+    volumes:
+      - postgres_capitalization_data:/var/lib/postgresql/data/
+    networks:
+      - services
+
+  pgadmin:
+    container_name: pgadmin_container
+    image: dpage/pgadmin4
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-pgadmin4@pgadmin.org}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      TZ: UTC
+    volumes:
+      - pgadmin:/var/lib/pgadmin
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    restart: unless-stopped
+    networks:
+      - services
+
+  # --- InteractiveAI frontend (Vue.js + nginx) ---
+  # Rebuilt with VITE_WP3_COLLECT_URL so traceSessionExport.ts can POST to WP3 (FR-13).
+  frontend:
+    container_name: frontend
+    build:
+      context: ./InteractiveAI/frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_POWERGRID_SIMU: ${VITE_POWERGRID_SIMU}
+        VITE_ATM_SIMU: ${VITE_ATM_SIMU}
+        VITE_RAILWAY_SIMU: ${VITE_RAILWAY_SIMU}
+        VITE_COGNITIVE_TOKEN: ${VITE_COGNITIVE_TOKEN}
+        # URL of the WP3 HAI service HTTP control plane; baked into the frontend
+        # at build time so traceSessionExport.ts can POST the session trace (FR-13).
+        VITE_WP3_COLLECT_URL: ${VITE_WP3_COLLECT_URL:-http://hai-testing-service:8080}
+    restart: unless-stopped
+    environment:
+      - VITE_POWERGRID_SIMU=${VITE_POWERGRID_SIMU}
+      - VITE_ATM_SIMU=${VITE_ATM_SIMU}
+      - VITE_RAILWAY_SIMU=${VITE_RAILWAY_SIMU}
+    volumes:
+      - ./InteractiveAI/config/dev/cab-standalone/ui-config:/usr/share/nginx/html/opfab
+      - ./InteractiveAI/config/dev/cab-standalone/nginx-cors-permissive.conf:/etc/nginx/conf.d/default.conf
+    ports:
+      - "3200:80"
+    depends_on:
+      - cabrecommendation
+      - cabevent
+      - cabcontext
+      - cabhistoric
+      - users
+      - businessconfig
+      - cards-consultation
+    networks:
+      - services
+
+  # --- OperatorFabric services ---
+  # These require USER_ID and USER_GID env vars (e.g. set in .env: USER_ID=1000 USER_GID=1000).
+
+  mongodb:
+    image: mongo:4.4.4-bionic
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: password
+    networks:
+      - services
+
+  rabbitmq:
+    container_name: rabbit
+    image: rabbitmq:3-management
+    hostname: rabbit
+    networks:
+      - services
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:16.1.1
+    command: >
+      -Dkeycloak.migration.action=import
+      -Dkeycloak.migration.provider=dir
+      -Dkeycloak.migration.dir=/cab-keycloak/export
+      -Dkeycloak.profile.feature.upload_scripts=enabled
+    environment:
+      - KEYCLOAK_USER=admin
+      - KEYCLOAK_PASSWORD=admin
+      - DB_VENDOR=H2
+    volumes:
+      - ./InteractiveAI/config/dev/cab-keycloak:/cab-keycloak
+    ports:
+      - "89:8080"
+    networks:
+      - services
+
+  users:
+    container_name: users
+    image: "lfeoperatorfabric/of-users-service:3.11.0.RELEASE"
+    depends_on:
+      - mongodb
+      - rabbitmq
+    user: ${USER_ID}:${USER_GID}
+    ports:
+      - "2103:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE
+      - TZ=UTC
+    volumes:
+      - ./InteractiveAI/config/dev/certificates:/certificates_to_add
+      - ./InteractiveAI/config/dev/cab-standalone/users-docker.yml:/config/application.yml
+      - ./InteractiveAI/config/dev/cab-standalone/common-docker.yml:/config/common-docker.yml
+      - ${CONFIG_PATH:-./InteractiveAI/config/dev/cab-standalone}:/external-config
+    networks:
+      - services
+
+  businessconfig:
+    container_name: businessconfig
+    image: "lfeoperatorfabric/of-businessconfig-service:3.11.0.RELEASE"
+    depends_on:
+      - mongodb
+    user: ${USER_ID}:${USER_GID}
+    ports:
+      - "2100:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE
+      - TZ=UTC
+    volumes:
+      - ./InteractiveAI/config/dev/certificates:/certificates_to_add
+      - ./InteractiveAI/config/dev/cab-standalone/businessconfig-storage:/businessconfig-storage
+      - ./InteractiveAI/config/dev/cab-standalone/common-docker.yml:/config/common-docker.yml
+      - ./InteractiveAI/config/dev/cab-standalone/businessconfig-docker.yml:/config/application-docker.yml
+      - ${CONFIG_PATH:-./InteractiveAI/config/dev/cab-standalone}:/external-config
+    networks:
+      - services
+
+  cards-publication:
+    container_name: cards-publication
+    image: "lfeoperatorfabric/of-cards-publication-service:3.11.0.RELEASE"
+    depends_on:
+      - mongodb
+      - rabbitmq
+    user: ${USER_ID}:${USER_GID}
+    ports:
+      - "2102:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE
+      - TZ=UTC
+    volumes:
+      - ./InteractiveAI/config/dev/certificates:/certificates_to_add
+      - ./InteractiveAI/config/dev/cab-standalone/common-docker.yml:/config/common-docker.yml
+      - ./InteractiveAI/config/dev/cab-standalone/cards-publication-docker.yml:/config/application-docker.yml
+      - ${CONFIG_PATH:-./InteractiveAI/config/dev/cab-standalone}:/external-config
+    networks:
+      - services
+
+  cards-consultation:
+    container_name: cards-consultation
+    image: "lfeoperatorfabric/of-cards-consultation-service:3.11.0.RELEASE"
+    depends_on:
+      - mongodb
+      - rabbitmq
+    user: ${USER_ID}:${USER_GID}
+    ports:
+      - "2104:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE
+      - TZ=UTC
+    volumes:
+      - ./InteractiveAI/config/dev/certificates:/certificates_to_add
+      - ./InteractiveAI/config/dev/cab-standalone/common-docker.yml:/config/common-docker.yml
+      - ./InteractiveAI/config/dev/cab-standalone/cards-consultation-docker.yml:/config/application-docker.yml
+      - ${CONFIG_PATH:-./InteractiveAI/config/dev/cab-standalone}:/external-config
+    networks:
+      - services
+
+  web-ui:
+    container_name: web-ui
+    image: "lfeoperatorfabric/of-web-ui:3.11.0.RELEASE"
+    ports:
+      - "2002:80"
+    depends_on:
+      - users
+      - businessconfig
+      - cards-consultation
+    volumes:
+      - ./InteractiveAI/config/dev/cab-standalone/ui-config:/usr/share/nginx/html/opfab
+      - ./InteractiveAI/config/dev/cab-standalone/nginx-cors-permissive.conf:/etc/nginx/conf.d/default.conf
+    networks:
+      - services
+
+volumes:
+  postgres_context_data:
+  postgres_event_data:
+  postgres_historic_data:
+  postgres_recommendation_data:
+  postgres_capitalization_data:
+  pgadmin:
 
 networks:
   services:

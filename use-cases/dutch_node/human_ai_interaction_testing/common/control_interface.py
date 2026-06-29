@@ -15,11 +15,11 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Callable
+from typing import Any, Callable
 
 import uvicorn
-from fastapi import APIRouter, FastAPI, HTTPException, Response
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from .session_manager import SessionPhase, get_session_manager
@@ -178,21 +178,71 @@ def create_control_router(
     return router
 
 
+def create_collect_router(
+    collect_session_trace_handler: Callable[[dict], tuple[dict, int]],
+) -> APIRouter:
+    """Build the /collect FastAPI router for receiving session results from tools.
+
+    Exposes POST /session-trace, called by the InteractiveAI frontend on operator
+    logout to deliver the historic-session JSON to WP3 for server-side storage (FR-12).
+
+    Args:
+        collect_session_trace_handler: Function that receives the parsed request body
+            and returns a (response_dict, http_status_code) tuple.
+
+    Returns:
+        Configured APIRouter to mount at the /collect prefix.
+    """
+    router = APIRouter()
+
+    @router.post("/session-trace")
+    async def collect_session_trace(request: Request) -> JSONResponse:
+        """Receive a historic-session JSON from the InteractiveAI frontend (FR-12, FR-13).
+
+        The InteractiveAI frontend (traceSessionExport.ts) POSTs the full session
+        trace here on operator logout, alongside the existing browser download.
+        WP3 writes it as kpis.json to the shared volume so the polling thread can
+        detect session completion (FR-10).
+        """
+        try:
+            body: dict[str, Any] = await request.json()
+        except Exception:
+            return JSONResponse(
+                content={"error": "Request body is not valid JSON"},
+                status_code=400,
+            )
+
+        response_body, status_code = collect_session_trace_handler(body)
+        return JSONResponse(content=response_body, status_code=status_code)
+
+    return router
+
+
 def create_app(
     execute_handlers: dict[str, Callable[[ExecuteRequest], ExecuteResponse]],
     service_name: str = "Human-AI Interaction Testing Service",
+    collect_session_trace: Callable[[dict], tuple[dict, int]] | None = None,
 ) -> FastAPI:
-    """Build the FastAPI application with control plane and health endpoint.
+    """Build the FastAPI application with control plane, collect endpoint, and health.
 
     Args:
         execute_handlers: Method name → handler mapping for /control/execute.
         service_name: Title shown in the auto-generated OpenAPI docs.
+        collect_session_trace: Optional handler for POST /collect/session-trace (FR-12).
+            If provided, the /collect router is mounted. Receives the parsed JSON body
+            and returns (response_dict, status_code).
 
     Returns:
         Configured FastAPI application ready to serve.
     """
     app = FastAPI(title=service_name, version="0.1.0")
     app.include_router(create_control_router(execute_handlers), prefix="/control")
+
+    if collect_session_trace is not None:
+        app.include_router(
+            create_collect_router(collect_session_trace),
+            prefix="/collect",
+        )
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -208,6 +258,7 @@ def create_app(
 def run(
     execute_handlers: dict[str, Callable[[ExecuteRequest], ExecuteResponse]],
     service_name: str = "Human-AI Interaction Testing Service",
+    collect_session_trace: Callable[[dict], tuple[dict, int]] | None = None,
 ) -> None:
     """Configure logging and start the uvicorn HTTP server.
 
@@ -216,6 +267,7 @@ def run(
     Args:
         execute_handlers: Method name → handler mapping.
         service_name: Service name for logs and OpenAPI docs.
+        collect_session_trace: Optional handler for POST /collect/session-trace (FR-12).
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -225,4 +277,8 @@ def run(
     port = int(os.environ.get("PORT", "8005"))
 
     logger.info("Starting %s on %s:%s", service_name, host, port)
-    uvicorn.run(create_app(execute_handlers, service_name), host=host, port=port)
+    uvicorn.run(
+        create_app(execute_handlers, service_name, collect_session_trace),
+        host=host,
+        port=port,
+    )

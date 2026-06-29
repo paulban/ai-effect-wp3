@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<!--
+  hai-survey-wrapper — WP3 wrapper page for the hmisurveys surveychainer.
+
+  Architecture (FR-16, FR-18):
+    1. This page embeds surveychainer.html in an iframe.
+    2. The surveychainer embeds individual survey HTML files in its own inner iframe.
+    3. When the operator clicks "Finish" in the surveychainer, surveychainer fires:
+         window.top.postMessage({ success: true, participantData, allResults }, "*")
+       Because surveychainer is an iframe of this wrapper page, window.top is THIS page.
+    4. This page's message listener receives the payload and POSTs it to
+         POST /api/save_results
+       on the Flask sidecar (proxied by nginx). The sidecar writes survey_outcomes.json
+       to the WP3-mounted /results directory (FR-09, FR-18).
+    5. WP3 polling thread detects survey_outcomes.json and advances the session (FR-10).
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HAI Survey Session</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: #f4f6f8;
+    }
+
+    #survey-container {
+      width: 100%;
+      height: 100vh;
+    }
+
+    #survey-frame {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
+
+    #status-container {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: #f4f6f8;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 16px;
+      padding: 40px;
+      text-align: center;
+    }
+
+    #status-title {
+      font-size: 2rem;
+      color: #2c3e50;
+    }
+
+    #status-message {
+      font-size: 1.1rem;
+      color: #555;
+      max-width: 500px;
+    }
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 4px solid #ccc;
+      border-top-color: #007acc;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+  <!-- surveychainer is embedded here; its individual surveys load in a nested iframe -->
+  <div id="survey-container">
+    <iframe
+      id="survey-frame"
+      src="/html/surveychainer.html"
+      allow="clipboard-write"
+      title="HAI Survey"
+    ></iframe>
+  </div>
+
+  <!-- Shown while uploading and after completion -->
+  <div id="status-container">
+    <div class="spinner" id="spinner"></div>
+    <h1 id="status-title">Submitting survey…</h1>
+    <p id="status-message">Please wait while your responses are saved.</p>
+  </div>
+
+  <script>
+    const surveyContainer = document.getElementById("survey-container");
+    const statusContainer = document.getElementById("status-container");
+    const spinner         = document.getElementById("spinner");
+    const statusTitle     = document.getElementById("status-title");
+    const statusMessage   = document.getElementById("status-message");
+
+    /**
+     * Show the status overlay and hide the survey iframe.
+     * @param {string} title   - Large heading text.
+     * @param {string} message - Explanatory paragraph text.
+     * @param {boolean} showSpinner - Whether to show the loading spinner.
+     */
+    function showStatus(title, message, showSpinner) {
+      surveyContainer.style.display = "none";
+      statusContainer.style.display = "flex";
+      statusTitle.textContent   = title;
+      statusMessage.textContent = message;
+      spinner.style.display     = showSpinner ? "block" : "none";
+    }
+
+    /**
+     * Handle the surveychainer's completion message and POST results to Flask sidecar.
+     *
+     * surveychainer.html fires window.top.postMessage({ success: true, ... }, "*")
+     * when the operator clicks "Finish".  Because surveychainer is embedded in THIS
+     * iframe, window.top from surveychainer's perspective is this wrapper page.
+     */
+    window.addEventListener("message", (event) => {
+      // Only process the final surveychainer completion message.
+      if (!event.data || !event.data.success) return;
+
+      showStatus("Submitting survey…", "Please wait while your responses are saved.", true);
+
+      // POST the raw surveychainer payload to the Flask sidecar via nginx proxy (FR-18).
+      fetch("/api/save_results", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(event.data),
+      })
+        .then((response) => {
+          if (response.ok) {
+            showStatus(
+              "Thank you!",
+              "Your survey responses have been saved successfully. You may close this window.",
+              false
+            );
+          } else {
+            console.error("[WP3 survey wrapper] /api/save_results returned HTTP", response.status);
+            showStatus(
+              "Survey completed",
+              "Your responses were recorded locally, but the server reported an error ("
+                + response.status + "). Please contact the test administrator.",
+              false
+            );
+          }
+        })
+        .catch((networkError) => {
+          console.error("[WP3 survey wrapper] Failed to reach /api/save_results:", networkError);
+          showStatus(
+            "Survey completed",
+            "Your responses were recorded locally, but could not be sent to the server. "
+              + "Please contact the test administrator.",
+            false
+          );
+        });
+    });
+  </script>
+
+</body>
+</html>

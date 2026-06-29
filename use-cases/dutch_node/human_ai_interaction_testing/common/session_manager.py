@@ -189,6 +189,25 @@ class SessionManager:
                 not state.is_terminal() for state in self._sessions.values()
             )
 
+    def get_active_session_id(self) -> str | None:
+        """Return the session_id of the single active (non-terminal) session, or None.
+
+        v1 supports only one active session at a time (NFR-03). Returns the first
+        non-terminal session found; returns None if no active sessions exist.
+
+        Used by the collect endpoint (FR-12) to look up the results directory for
+        the active session when the request body does not include a wp3_session_id
+        (see OQ-1 in spec).
+
+        Returns:
+            The session_id string of the active session, or None.
+        """
+        with self._lock:
+            for session_id, state in self._sessions.items():
+                if not state.is_terminal():
+                    return session_id
+            return None
+
 
 # ---------------------------------------------------------------------------
 # Module-level singleton — one SessionManager per process.
