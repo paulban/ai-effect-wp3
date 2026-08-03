@@ -51,8 +51,9 @@ This spec covers restructuring the Dutch node onto the standard tooling. The com
 | FR-08 | `build_ai4eu_package.py`, the old `export/` and `dutch-node.zip` are removed | Must | Superseded by the standard generator |
 | FR-09 | Redundant per-service `blueprint.json` / `dockerinfo.json` are removed; `run_workflow.sh` reads the generated `export/` instead | Must | Single source of truth |
 | FR-10 | Submodule paths in `.gitmodules` follow the HAI service, with pinned SHAs unchanged | Must | `2a41af9` InteractiveAI, `fa52f51` hmisurveys |
-| FR-11 | The benchmark service still compiles stubs for the data synthesizer's proto after the split | Must | Vendored to `services/benchmarking/external_proto/`; see gotchas |
-| FR-12 | `test_synth_to_benchmark.py` is retained as an explicitly manual cross-service check, not a pipeline test | Should | Moved to `dutch-node-benchmarking/tests/` |
+| FR-11 | ~~The benchmark service still compiles stubs for the data synthesizer's proto after the split~~ | Superseded | Withdrawn 2026-08-03: the benchmark draws from a preset grid2op scenario, so the synthesizer dependency and `external_proto/` were removed entirely |
+| FR-12 | ~~`test_synth_to_benchmark.py` is retained as an explicitly manual cross-service check~~ | Superseded | Withdrawn 2026-08-03 with FR-11; there is no cross-service path left to check |
+| FR-13 | The benchmark's scenario is preset configuration (`l2rpn_case14_sandbox`), never supplied by the data synthesizer | Must | Added 2026-08-03; see revision 0.2 |
 
 ---
 
@@ -62,7 +63,7 @@ This spec covers restructuring the Dutch node onto the standard tooling. The com
 |---|----------|-------|-----|
 | 1 | Does anyone hold `ghcr.io/ai-effect` package write access? Values are recorded either way; nothing is pushed by this work. | Paul | Before portal upload |
 | 2 | Should the benchmark's published training dataset (HuggingFace link?) be surfaced in the proto or export metadata? | Paul | Follow-up |
-| 3 | `benchmarking/run_workflow.sh` still health-checks the synthesizer and aborts if it is down. Legitimate (the benchmark can fetch grid data over gRPC) or now vestigial? | Paul | Before next demo |
+| 3 | ~~`benchmarking/run_workflow.sh` still health-checks the synthesizer and aborts if it is down.~~ **Resolved 2026-08-03:** vestigial. The workflow only ever sent an inline payload with a preset `env_name`, so the gate could abort a run for a service it never called. Gate removed and the gRPC ingestion path deleted. | Paul | Closed |
 
 ---
 
@@ -136,7 +137,7 @@ This spec covers restructuring the Dutch node onto the standard tooling. The com
 - RPC filtering is `if connected_methods and ...` — an empty set means *no* filtering, so a connectionless service exports every RPC. The allowlist must take precedence over the connection-derived path, not merge with it.
 - `service['name']` is the `ip_address` from service_mapping, not the directory name. The derived image name is `<use-case-dir>-<ip_address>:latest` and has no registry host, so it cannot be pulled.
 - `benchmarking/Dockerfile` pre-compiles protos at **build** time, so runtime path resolution never fires in the container. Both host and build paths must be fixed; testing only one hides the other.
-- The benchmark depends on the synthesizer's proto (`benchmark_operations.py` calls `GetGridData`). After the split it is vendored to `services/benchmarking/external_proto/` — deliberately *not* `proto/`, which must hold exactly one file or the generator's choice of service interface becomes ambiguous. This copy can drift.
+- ~~The benchmark depends on the synthesizer's proto, vendored to `services/benchmarking/external_proto/`.~~ **Obsolete as of 0.2:** the dependency was removed with FR-11. The underlying constraint still holds for any future case — `services/<name>/proto/` must hold exactly one file, or the generator's choice of service interface becomes ambiguous.
 - VS Code's git extension holds handles on submodule directories listed in `git.scanRepositories`, which makes `git mv` of their parent fail with "Permission denied" on Windows. Close the editor before moving.
 
 **What the implementation must NOT do:**
@@ -153,3 +154,4 @@ This spec covers restructuring the Dutch node onto the standard tooling. The com
 | Version | Date | Author | Summary of changes |
 |---------|------|--------|--------------------|
 | 0.1 | 2026-08-03 | Paul Bannmüller | Initial draft — three-way split, operations allowlist, image override |
+| 0.2 | 2026-08-03 | Paul Bannmüller | Benchmark scenario is preset, not synthesizer-fed: withdrew FR-11/FR-12, added FR-13, closed open question 3 |

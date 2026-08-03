@@ -1,7 +1,9 @@
 """Grid2Benchmark operations for AI-Effect orchestration.
 
-RunBenchmark consumes canonical protobuf/gRPC inputs from the Dutch data plane and
-publishes canonical structured benchmark protobuf results.
+RunBenchmark evaluates a submitted algorithm against a preset grid2op scenario
+and publishes canonical structured benchmark protobuf results. The benchmark is
+a standalone service: its scenario is fixed configuration, not data supplied by
+the data synthesizer.
 """
 
 from __future__ import annotations
@@ -35,13 +37,13 @@ from .task_manager import get_task_manager
 
 logger = logging.getLogger(__name__)
 
-ensure_generated("data_synthesizer.proto", "benchmarking.proto")
+ensure_generated("benchmarking.proto")
 import benchmarking_pb2  # type: ignore  # noqa: E402
 import benchmarking_pb2_grpc  # type: ignore  # noqa: E402
-import data_synthesizer_pb2  # type: ignore  # noqa: E402
-import data_synthesizer_pb2_grpc  # type: ignore  # noqa: E402
 
-DEFAULT_ENV_NAME = "synthetic-grid-v0"
+# Preset benchmark scenario. The benchmark runs a fixed, published grid2op
+# environment; it does not take its scenario from the data synthesizer.
+DEFAULT_ENV_NAME = "l2rpn_case14_sandbox"
 DEFAULT_MAX_STEPS = 200
 
 REQUIRED_ALGORITHM_FUNCTION = "build_agent"
@@ -209,26 +211,6 @@ class BenchmarkConfig:
         return self.scenarios[0].env_name if self.scenarios else DEFAULT_ENV_NAME
 
 
-def _grid2op_env_name_from_grid_data(grid_data: Any) -> str:
-    """Resolve benchmark environment name from synthesized grid metadata.
-
-    Priority:
-      1. grid_data.metadata["grid2op_env_name"]
-      2. grid_data.metadata["benchmark_env_name"] (legacy key)
-      3. DEFAULT_ENV_NAME
-    """
-    metadata = getattr(grid_data, "metadata", None)
-    if metadata is not None:
-        env_name = str(metadata.get("grid2op_env_name", "")).strip()
-        if env_name:
-            return env_name
-        legacy_env_name = str(metadata.get("benchmark_env_name", "")).strip()
-        if legacy_env_name:
-            return legacy_env_name
-
-    return DEFAULT_ENV_NAME
-
-
 def _fetch_http_data(uri: str, timeout: float = 60.0) -> str:
     import httpx
 
@@ -251,22 +233,13 @@ def _decode_inline_json(input_ref: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"Invalid inline base64 JSON payload: {exc}") from exc
 
 
-def _fetch_grid_data_from_upstream(
-    grpc_uri: str,
-) -> data_synthesizer_pb2.GetGridDataResponse:
-    channel = grpc.insecure_channel(grpc_uri)
-    stub = data_synthesizer_pb2_grpc.DataSynthesizerServiceStub(channel)
-    try:
-        return stub.GetGridData(data_synthesizer_pb2.GetGridDataRequest())
-    finally:
-        channel.close()
+def _resolve_payload(inputs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Resolve the benchmark payload from AI-Effect DataReference entries.
 
-
-def _split_inputs(
-    inputs: list[dict[str, Any]],
-) -> tuple[dict[str, Any] | None, data_synthesizer_pb2.GetGridDataResponse | None]:
+    The benchmark runs a preset scenario, so the payload is the only input it
+    accepts; there is no upstream service to fetch grid data from.
+    """
     payload: dict[str, Any] | None = None
-    grid_data_response: data_synthesizer_pb2.GetGridDataResponse | None = None
 
     for input_ref in inputs:
         protocol = str(input_ref.get("protocol", "")).lower()
@@ -278,16 +251,9 @@ def _split_inputs(
             payload = json.loads(_fetch_http_data(str(input_ref.get("uri", ""))))
             continue
 
-        if protocol == "grpc":
-            uri = str(input_ref.get("uri", ""))
-            if not uri:
-                raise ValueError("gRPC input is missing uri")
-            grid_data_response = _fetch_grid_data_from_upstream(uri)
-            continue
-
         raise ValueError(f"Unsupported input protocol: {protocol}")
 
-    return payload, grid_data_response
+    return payload
 
 
 def _parse_benchmark_config(payload: dict[str, Any]) -> BenchmarkConfig:
@@ -765,163 +731,6 @@ def _invoke_grid2benchmark(config: BenchmarkConfig, source_code: str) -> dict[st
     return _normalize_benchmark_result(result, config)
 
 
-def _create_csv_time_series_from_net(net: Any, output_dir: Path) -> Path:
-    """Generate Grid2Op-compatible CSV time series files from a pandapower network.
-
-    .. warning::
-        The data_synthesizer service does not yet produce time-varying load/gen
-        profiles.  This function falls back to a **flat static profile** built
-        from the pandapower operating point (load p_mw / q_mvar, gen p_mw /
-        vm_pu * vn_kv), repeated over a fixed 12-step (1 h at 5-min intervals)
-        horizon.  All eight CSV files required by Grid2Op are written with
-        identical actual and forecasted values.
-
-    TODO: Once the data_synthesizer exposes real time series (e.g. via a
-          ``time_series_json`` field in GridData or a dedicated RPC), replace
-          this fallback with proper profile ingestion.
-    """
-    import warnings
-    import pandas as pd  # type: ignore
-
-    warnings.warn(
-        "No time series data provided by the synthesizer. "
-        "Generating a flat static profile from the pandapower operating point "
-        "repeated over a 12-step (1 h) horizon. "
-        "TODO: implement time series synthesis in the data_synthesizer service.",
-        UserWarning,
-        stacklevel=3,
-    )
-    logger.warning(
-        "Time series unavailable – using static operating-point profile repeated "
-        "12 steps (1 h at 5-min intervals). "
-        "TODO: data_synthesizer must produce real load/gen time series."
-    )
-
-    time_series_dir = output_dir / "time_series_csv"
-    time_series_dir.mkdir(parents=True, exist_ok=True)
-
-    n_steps = 12  # 1 hour at 5-minute intervals
-
-    load_names = [str(n) for n in net.load["name"]]
-    load_p_vals = [float(v) for v in net.load["p_mw"]]
-    load_q_vals = [float(v) for v in net.load["q_mvar"]]
-    gen_names = [str(n) for n in net.gen["name"]]
-    gen_p_vals = [float(v) for v in net.gen["p_mw"]]
-    gen_v_vals = [
-        float(net.bus.loc[int(bus), "vn_kv"]) * float(vm_pu)
-        for bus, vm_pu in zip(net.gen["bus"], net.gen["vm_pu"])
-    ]
-
-    def _flat(names: list[str], vals: list[float]) -> dict[str, list[float]]:
-        return {name: [v] * n_steps for name, v in zip(names, vals)}
-
-    for fname, data in [
-        ("load_p.csv", _flat(load_names, load_p_vals)),
-        ("load_q.csv", _flat(load_names, load_q_vals)),
-        ("prod_p.csv", _flat(gen_names, gen_p_vals)),
-        ("prod_v.csv", _flat(gen_names, gen_v_vals)),
-        ("load_p_forecasted.csv", _flat(load_names, load_p_vals)),
-        ("load_q_forecasted.csv", _flat(load_names, load_q_vals)),
-        ("prod_p_forecasted.csv", _flat(gen_names, gen_p_vals)),
-        ("prod_v_forecasted.csv", _flat(gen_names, gen_v_vals)),
-    ]:
-        pd.DataFrame(data).to_csv(time_series_dir / fname, index=False)
-
-    (time_series_dir / "start_datetime.info").write_text(
-        "2020-01-01 00:00\n", encoding="utf-8"
-    )
-    (time_series_dir / "time_interval.info").write_text("00:05\n", encoding="utf-8")
-    return time_series_dir
-
-
-def _adapt_grid_data_to_config(
-    config: BenchmarkConfig, grid_data: Any, work_dir: Path
-) -> BenchmarkConfig:
-    """Materialise pandapower topology + CSV time series files for each scenario.
-
-    GridData.pandapower_json is written directly as the topology file so the
-    benchmark can call pp.from_json() without any intermediate conversion.
-    The pandapower network is loaded at most once per call (lazy, for time series
-    generation only).
-    """
-    import pandapower as pp  # type: ignore
-    import tempfile
-
-    pp_json: str = str(grid_data.pandapower_json)
-    _net: Any = None
-
-    def _get_net() -> Any:
-        """Load the pandapower net once, on first demand."""
-        nonlocal _net
-        if _net is None:
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".json", delete=False, encoding="utf-8"
-            ) as f:
-                f.write(pp_json)
-                tmp = f.name
-            try:
-                _net = pp.from_json(tmp)
-            finally:
-                Path(tmp).unlink(missing_ok=True)
-        return _net
-
-    adapted_scenarios: list[ScenarioConfig] = []
-    synth_env_name = _grid2op_env_name_from_grid_data(grid_data)
-
-    logger.info(
-        "Building fixed Grid2Op environment from synthesized grid: env_name=%s",
-        synth_env_name,
-    )
-    for index, scenario in enumerate(config.scenarios):
-        scenario_dir = work_dir / f"scenario_{index}"
-        scenario_dir.mkdir(parents=True, exist_ok=True)
-
-        # Always materialise topology/time-series from synthesized grid data.
-        # This enforces benchmarking on the environment produced by data_synthesizer.
-        topology_path = scenario_dir / "grid.json"
-        topology_path.write_text(pp_json, encoding="utf-8")
-        topology = TopologySourceConfig(
-            format="pandapower",
-            path=str(topology_path),
-        )
-
-        time_series_path = _create_csv_time_series_from_net(_get_net(), scenario_dir)
-        time_series = TimeSeriesSourceConfig(
-            format="csv",
-            path=str(time_series_path),
-        )
-
-        if scenario.topology is not None or scenario.time_series is not None:
-            logger.warning(
-                "Ignoring user-provided topology/time_series for scenario %s; "
-                "using synthesized grid artifacts instead.",
-                index,
-            )
-
-        if scenario.env_name != synth_env_name:
-            logger.warning(
-                "Overriding scenario env_name '%s' with synthesized env '%s'",
-                scenario.env_name,
-                synth_env_name,
-            )
-
-        adapted_scenarios.append(
-            ScenarioConfig(
-                env_name=synth_env_name,
-                time_series_ids=scenario.time_series_ids,
-                topology=topology,
-                time_series=time_series,
-                backend=scenario.backend or "pandapower",
-            )
-        )
-
-    return BenchmarkConfig(
-        max_steps=config.max_steps,
-        scenarios=tuple(adapted_scenarios),
-        kpis=config.kpis,
-    )
-
-
 def _metric_value_from_any(value: Any) -> benchmarking_pb2.MetricValue:
     metric = benchmarking_pb2.MetricValue()
 
@@ -1059,14 +868,7 @@ def execute_RunBenchmark(request: ExecuteRequest) -> ExecuteResponse:
         return ExecuteResponse(status="failed", error="No benchmark input provided")
 
     try:
-        payload, grid_data_response = _split_inputs(request.inputs)
-        payload = payload or {}
-
-        if grid_data_response is not None and not grid_data_response.success:
-            return ExecuteResponse(
-                status="failed",
-                error=f"Upstream synthesized grid unavailable: {grid_data_response.message}",
-            )
+        payload = _resolve_payload(request.inputs) or {}
 
         config = _parse_benchmark_config(payload)
         source_code = _get_algorithm_source(payload)
@@ -1074,28 +876,7 @@ def execute_RunBenchmark(request: ExecuteRequest) -> ExecuteResponse:
         module = _load_algorithm_module(source_code)
         _validate_algorithm_module(module)
 
-        with tempfile.TemporaryDirectory(prefix="griddata_adapter_") as work_dir:
-            if grid_data_response is not None:
-                config = _adapt_grid_data_to_config(
-                    config,
-                    grid_data_response.grid_data,
-                    Path(work_dir),
-                )
-
-            benchmark_result = _invoke_grid2benchmark(config, source_code)
-
-        if grid_data_response is not None:
-            benchmark_result.setdefault("metadata", {})
-            benchmark_result["metadata"][
-                "upstream_grid_id"
-            ] = grid_data_response.grid_data.grid_id
-            benchmark_result["metadata"]["upstream_grid_nodes"] = int(
-                grid_data_response.grid_data.metadata.get("nodes", "0") or 0
-            )
-            benchmark_result["metadata"]["upstream_grid_edges"] = int(
-                grid_data_response.grid_data.metadata.get("edges", "0") or 0
-            )
-            benchmark_result["metadata"]["upstream_grid_adapter"] = "benchmark-service"
+        benchmark_result = _invoke_grid2benchmark(config, source_code)
 
         result_json = json.dumps(benchmark_result, indent=2)
         get_task_manager().store_data(request.task_id, result_json, "json")

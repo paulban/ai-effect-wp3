@@ -10,10 +10,6 @@ def ensure_generated(*proto_files: str) -> Path:
     common_dir = Path(__file__).resolve().parent
     service_root = common_dir.parent
     benchmark_proto_dir = service_root / "proto"
-    # Vendored copy of the data synthesizer's proto. It used to be resolved as a
-    # sibling service directory, which stopped working when the synthesizer moved
-    # into its own use case with its own Docker build context.
-    synth_proto_dir = service_root / "external_proto"
     generated_dir = common_dir / "_generated"
     generated_dir.mkdir(parents=True, exist_ok=True)
 
@@ -44,16 +40,14 @@ def ensure_generated(*proto_files: str) -> Path:
         direct = Path(proto)
         if direct.is_absolute() and direct.exists():
             return direct
-        for base in (benchmark_proto_dir, synth_proto_dir):
-            candidate = base / proto
-            if candidate.exists():
-                return candidate
-        raise FileNotFoundError(f"Proto file not found in known proto dirs: {proto}")
+        candidate = benchmark_proto_dir / proto
+        if candidate.exists():
+            return candidate
+        raise FileNotFoundError(f"Proto file not found in {benchmark_proto_dir}: {proto}")
 
     args = [
         "grpc_tools.protoc",
         f"-I{benchmark_proto_dir}",
-        f"-I{synth_proto_dir}",
         f"--python_out={generated_dir}",
         f"--grpc_python_out={generated_dir}",
     ] + [str(resolve_proto(proto)) for proto in proto_files]

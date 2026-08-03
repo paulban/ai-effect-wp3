@@ -20,8 +20,8 @@
         }
     ],
     "name": "Dutch-Node-Benchmarking",
-    "pipeline_id": "62d257ce-5b59-4201-894c-b95ea83f63ba",
-    "creation_date": "2026-08-03 16:39:16.911149",
+    "pipeline_id": "0dd944a4-697b-49b9-92ca-bf6bf27ae0af",
+    "creation_date": "2026-08-03 18:09:39.141420",
     "type": "pipeline-topology/v2",
     "version": "2.0"
 }

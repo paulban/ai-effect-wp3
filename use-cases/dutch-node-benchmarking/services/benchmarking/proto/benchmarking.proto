@@ -65,15 +65,11 @@ message GridSynthesisConfig {
   map<string, string> metadata = 10;
 }
 
-// GridData carries the synthesized grid as a native pandapower JSON snapshot.
-// Using pandapower's own serialisation format avoids a lossy intermediate
-// representation and lets the benchmark service call pp.from_json() directly.
+// GridData carries a grid as a native pandapower JSON snapshot.
 //
-// TODO (time series): pandapower JSON does not include time-varying load/gen
-// profiles. Until the data_synthesizer generates real time series the benchmark
-// service will fall back to a flat static profile derived from the operating
-// point. Add a time_series_json field (or a separate RPC) once the synthesizer
-// can produce load curves.
+// Retained for wire compatibility only. The benchmark runs a preset grid2op
+// scenario and no longer ingests grid data from the data synthesizer, so
+// BenchmarkExecutionSpec.grid_data is not read by the service.
 message GridData {
   string grid_id = 1;
   string pandapower_json = 2;

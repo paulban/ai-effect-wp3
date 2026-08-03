@@ -64,7 +64,6 @@ json_get_field() {
 }
 
 ORCHESTRATOR_URL="http://localhost:18000"
-SYNTH_SERVICE_URL="http://localhost:8003"
 SERVICE_URL="http://localhost:8004"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 POLL_INTERVAL=3
@@ -107,14 +106,6 @@ fi
 
 echo -n "Benchmark service ($SERVICE_URL)... "
 if curl -sf "$SERVICE_URL/health" > /dev/null 2>&1; then
-  echo "OK"
-else
-  echo "UNREACHABLE"
-  exit 1
-fi
-
-echo -n "Synthetic data service ($SYNTH_SERVICE_URL)... "
-if curl -sf "$SYNTH_SERVICE_URL/health" > /dev/null 2>&1; then
   echo "OK"
 else
   echo "UNREACHABLE"
