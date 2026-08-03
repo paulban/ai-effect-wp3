@@ -1,0 +1,14 @@
+{
+  "pipeline": {
+    "name": "Dutch Node Benchmarking",
+    "service_mapping": {
+      "benchmarking": {
+        "ip_address": "benchmark-runner",
+        "port": 8080,
+        "operations": ["RunBenchmark"],
+        "image": "ghcr.io/ai-effect/dutch-node-benchmarking:latest"
+      }
+    },
+    "connections": []
+  }
+}

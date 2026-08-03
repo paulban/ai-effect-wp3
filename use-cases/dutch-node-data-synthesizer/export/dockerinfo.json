@@ -1,0 +1,9 @@
+{
+    "docker_info_list": [
+        {
+            "container_name": "data_synthesizer1",
+            "ip_address": "synthetic-data",
+            "port": "8080"
+        }
+    ]
+}

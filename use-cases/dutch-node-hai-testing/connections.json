@@ -1,0 +1,14 @@
+{
+  "pipeline": {
+    "name": "Dutch Node Human-AI Interaction Testing",
+    "service_mapping": {
+      "human_ai_interaction_testing": {
+        "ip_address": "hai-testing-service",
+        "port": 8080,
+        "operations": ["StartHumanAISession"],
+        "image": "ghcr.io/ai-effect/dutch-node-hai-testing:latest"
+      }
+    },
+    "connections": []
+  }
+}

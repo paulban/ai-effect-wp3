@@ -1,9 +1,0 @@
-{
-  "docker_info_list": [
-    {
-      "container_name": "hai-testing-service",
-      "ip_address": "hai-testing-service",
-      "port": "8080"
-    }
-  ]
-}

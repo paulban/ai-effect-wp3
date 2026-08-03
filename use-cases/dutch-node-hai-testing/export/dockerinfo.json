@@ -1,0 +1,9 @@
+{
+    "docker_info_list": [
+        {
+            "container_name": "human_ai_interaction_testing1",
+            "ip_address": "hai-testing-service",
+            "port": "8080"
+        }
+    ]
+}

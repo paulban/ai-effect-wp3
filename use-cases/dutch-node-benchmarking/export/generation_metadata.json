@@ -1,0 +1,12 @@
+{
+    "use_case_name": "dutch-node-benchmarking",
+    "use_case_directory": "dutch-node-benchmarking",
+    "source_path": "../../use-cases/dutch-node-benchmarking",
+    "services": [
+        {
+            "service_name": "benchmark-runner",
+            "container_name": "benchmarking1",
+            "image_name": "ghcr.io/ai-effect/dutch-node-benchmarking:latest"
+        }
+    ]
+}

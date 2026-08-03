@@ -1,9 +1,0 @@
-{
-  "docker_info_list": [
-    {
-      "container_name": "grid_synth_service",
-      "ip_address": "synthetic-data",
-      "port": "8080"
-    }
-  ]
-}

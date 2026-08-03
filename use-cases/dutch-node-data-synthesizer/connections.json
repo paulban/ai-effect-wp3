@@ -1,0 +1,14 @@
+{
+  "pipeline": {
+    "name": "Dutch Node Data Synthesizer",
+    "service_mapping": {
+      "data_synthesizer": {
+        "ip_address": "synthetic-data",
+        "port": 8080,
+        "operations": ["ConfigureAndSynthesize"],
+        "image": "ghcr.io/ai-effect/dutch-node-data-synthesizer:latest"
+      }
+    },
+    "connections": []
+  }
+}

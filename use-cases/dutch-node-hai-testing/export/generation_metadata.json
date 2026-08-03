@@ -1,0 +1,12 @@
+{
+    "use_case_name": "dutch-node-hai-testing",
+    "use_case_directory": "dutch-node-hai-testing",
+    "source_path": "../../use-cases/dutch-node-hai-testing",
+    "services": [
+        {
+            "service_name": "hai-testing-service",
+            "container_name": "human_ai_interaction_testing1",
+            "image_name": "ghcr.io/ai-effect/dutch-node-hai-testing:latest"
+        }
+    ]
+}

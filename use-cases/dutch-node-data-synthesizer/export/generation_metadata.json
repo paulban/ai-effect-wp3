@@ -1,0 +1,12 @@
+{
+    "use_case_name": "dutch-node-data-synthesizer",
+    "use_case_directory": "dutch-node-data-synthesizer",
+    "source_path": "../../use-cases/dutch-node-data-synthesizer",
+    "services": [
+        {
+            "service_name": "synthetic-data",
+            "container_name": "data_synthesizer1",
+            "image_name": "ghcr.io/ai-effect/dutch-node-data-synthesizer:latest"
+        }
+    ]
+}

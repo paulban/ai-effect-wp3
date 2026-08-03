@@ -1,0 +1,9 @@
+{
+    "docker_info_list": [
+        {
+            "container_name": "benchmarking1",
+            "ip_address": "benchmark-runner",
+            "port": "8080"
+        }
+    ]
+}

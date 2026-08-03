@@ -1,0 +1,27 @@
+{
+    "nodes": [
+        {
+            "proto_uri": "microservice/human_ai_interaction_testing1.proto",
+            "image": "ghcr.io/ai-effect/dutch-node-hai-testing:latest",
+            "node_type": "DataSource",
+            "container_name": "human_ai_interaction_testing1",
+            "operation_signature_list": [
+                {
+                    "connected_to": [],
+                    "operation_signature": {
+                        "operation_name": "StartHumanAISession",
+                        "output_message_name": "StartSessionResponse",
+                        "input_message_name": "HumanAISessionSpec",
+                        "output_message_stream": false,
+                        "input_message_stream": false
+                    }
+                }
+            ]
+        }
+    ],
+    "name": "Dutch-Node-Hai-Testing",
+    "pipeline_id": "702d5ca9-0422-49a3-ba29-7e937b48a974",
+    "creation_date": "2026-08-03 17:06:52.646921",
+    "type": "pipeline-topology/v2",
+    "version": "2.0"
+}

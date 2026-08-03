@@ -1,0 +1,18 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test / tooling caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environments
+.venv
+venv/
+env/
+
+# NOTE: common/_generated/*_pb2.py is intentionally tracked — the service
+# images import it at runtime without a build-time protoc step.
+# NOTE: export/ and dutch-node-hai-testing.zip are also tracked, matching the other nodes.

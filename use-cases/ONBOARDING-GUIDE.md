@@ -146,6 +146,39 @@ What to put in `ip_address` and `port` depends on your deployment:
 "anomaly_detector": {"ip_address": "10.0.1.20", "port": 8080}
 ```
 
+**`operations` (optional)** — restrict which RPCs are exported:
+```json
+"benchmarking": {"ip_address": "benchmark-runner", "port": 8080,
+                 "operations": ["RunBenchmark"]}
+```
+
+RPCs are normally filtered by what `connections` wires together. A **standalone
+service has no connections**, so without an allowlist every RPC in its proto is
+exported — and the orchestrator treats each one as an independent start node,
+firing them all on a single workflow submission. List only the entry point.
+
+**`image` (optional)** — set the image reference explicitly:
+```json
+"benchmarking": {"ip_address": "benchmark-runner", "port": 8080,
+                 "image": "ghcr.io/ai-effect/benchmarking:latest"}
+```
+
+Without it the image is derived as `<use-case-dir>-<ip_address>:latest`, which
+has no registry host and therefore cannot be pulled — fine when images are
+side-loaded onto the host, not when the portal must fetch them.
+
+### Standalone services (no pipeline)
+
+If your services are independent rather than a pipeline, give **each one its own
+use case directory**, with a single-entry `service_mapping`, an `operations`
+allowlist, and `"connections": []`. One package per service means one portal
+Solution per service, and one start node per workflow submission.
+
+Bundling independent services into a single use case is possible but rarely
+what you want: with no connections every node is a start node, so submitting
+that workflow executes all of them at once. See `dutch-node-benchmarking/` and
+its siblings for a worked example.
+
 ### connections (required)
 
 Each entry wires one operation's output to another operation's input.

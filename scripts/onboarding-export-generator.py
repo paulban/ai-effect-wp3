@@ -14,6 +14,20 @@ Required input structure:
         services/
             <service_dir>/proto/<name>.proto
         connections.json   (pipeline topology + service_mapping)
+
+Each service_mapping entry takes `ip_address` and `port`, plus two optional
+fields:
+
+    "operations": ["RunBenchmark"]                     restrict exported RPCs
+    "image": "ghcr.io/ai-effect/benchmarking:latest"   explicit image reference
+
+`operations` matters for standalone services. RPCs are normally filtered by
+what connections.json wires together, so a service with no connections exports
+every RPC in its proto -- and the orchestrator treats each one as an
+independent start node. The allowlist pins the entry point instead.
+
+`image` overrides the derived <use-case>-<service>:latest name, which has no
+registry namespace and so cannot be pulled.
 """
 
 import json
@@ -70,6 +84,13 @@ class OnboardingExportGenerator:
                 'container_name': f"{dir_name}1",
                 'proto_file': proto_files[0],
                 'service_dir': service_dir,
+                # Optional: restrict the exported RPCs to an explicit allowlist.
+                # Needed for standalone services, which have no connections to
+                # derive the relevant methods from. None means "no allowlist".
+                'operations': mapping.get('operations'),
+                # Optional: full image reference, e.g. a registry path. Falls
+                # back to the derived <use-case>-<service>:latest name.
+                'image': mapping.get('image'),
             }
             services.append(service_info)
             print(f"Found service: {dir_name} -> {mapping['ip_address']}:{mapping['port']}")
@@ -177,6 +198,15 @@ class OnboardingExportGenerator:
 
         return connections
 
+    def resolve_image(self, service):
+        """Resolve the container image reference for a service.
+
+        Uses the explicit `image` from connections.json when present, so a use
+        case can point at a real registry path. Otherwise falls back to the
+        derived <use-case>-<service>:latest name.
+        """
+        return service.get('image') or f"{self.use_case_dir.name}-{service['name']}:latest"
+
     def generate_blueprint_node(self, service, connections, connected_methods, node_type):
         """Generate a blueprint node for a service."""
         container = service['container_name']
@@ -185,11 +215,27 @@ class OnboardingExportGenerator:
         rpc_info = self.extract_rpc_methods(service['proto_file'])
         operation_signatures = []
 
+        # An explicit allowlist wins over connection-derived filtering. A
+        # standalone service has no connections, so without this every RPC in
+        # the proto would become an independent start node for the orchestrator.
+        allowed_operations = service.get('operations')
+        if allowed_operations:
+            known = {rpc['method_name'] for rpc in rpc_info}
+            for unknown in sorted(set(allowed_operations) - known):
+                print(
+                    f"Warning: operation '{unknown}' listed for "
+                    f"'{service['dir_name']}' is not defined in "
+                    f"{service['proto_file'].name}"
+                )
+
         for rpc in rpc_info:
             method_name = rpc['method_name']
 
+            if allowed_operations:
+                if method_name not in allowed_operations:
+                    continue
             # Filter: if we know which methods are connected, skip unconnected ones
-            if connected_methods and method_name not in connected_methods:
+            elif connected_methods and method_name not in connected_methods:
                 continue
 
             # Look up connections: try specific method, then fall back to __all__
@@ -209,7 +255,7 @@ class OnboardingExportGenerator:
 
         node = {
             "proto_uri": f"microservice/{service['container_name']}.proto",
-            "image": f"{self.use_case_dir.name}-{service['name']}:latest",
+            "image": self.resolve_image(service),
             "node_type": node_type,
             "container_name": service['container_name'],
             "operation_signature_list": operation_signatures
@@ -324,7 +370,7 @@ class OnboardingExportGenerator:
             metadata["services"].append({
                 "service_name": service['name'],
                 "container_name": service['container_name'],
-                "image_name": f"{self.use_case_dir.name}-{service['name']}:latest"
+                "image_name": self.resolve_image(service)
             })
 
         return metadata
