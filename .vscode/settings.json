@@ -1,0 +1,5 @@
+{
+    "git.scanRepositories": [
+        "use-cases/dutch_node/human_ai_interaction_testing/InteractiveAI"
+    ]
+}
