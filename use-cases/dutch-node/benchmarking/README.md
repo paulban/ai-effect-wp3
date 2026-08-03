@@ -34,7 +34,7 @@ This use case runs a canonical protobuf/gRPC benchmark pipeline for network topo
 - Docker builds compile protobufs during image build; runtime fallback generation is implemented in `common/proto_runtime.py`.
 
 ## Run locally as service
-1. cd use-cases/dutch_node/benchmarking
+1. cd use-cases/dutch-node/benchmarking
 2. docker network create ai-effect-services || true
 3. docker compose -f docker-compose-all.yml up -d --build
 4. curl http://localhost:8004/health

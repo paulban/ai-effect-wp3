@@ -211,8 +211,8 @@ The Human-AI Interaction Testing Service (`human_ai_interaction_testing`) is a n
 
 **Language & runtime:** Python 3.11
 **Execution model:** Synchronous gRPC handlers + per-session background polling thread
-**Entry point:** `use-cases/dutch_node/human_ai_interaction_testing/main.py`
-**Code location:** `use-cases/dutch_node/human_ai_interaction_testing/` — edit existing files in place
+**Entry point:** `use-cases/dutch-node/human_ai_interaction_testing/main.py`
+**Code location:** `use-cases/dutch-node/human_ai_interaction_testing/` — edit existing files in place
 
 **Existing interfaces to respect:**
 - `SessionManager` / `SessionPhase` in `common/session_manager.py` — no changes needed

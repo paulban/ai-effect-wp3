@@ -1,6 +1,6 @@
 # hai-survey-wrapper — WP3-built Docker image for the hmisurveys survey container.
 #
-# Build context: use-cases/dutch_node/human_ai_interaction_testing/
+# Build context: use-cases/dutch-node/human_ai_interaction_testing/
 # Build command (from that directory):
 #   docker build -f hai-survey-wrapper/Dockerfile -t hai-survey-wrapper:latest .
 #

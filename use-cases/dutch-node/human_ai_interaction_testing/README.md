@@ -224,7 +224,7 @@ Unknown until the image is built and run. Set `HAI_HMISURVEYS_PORT` once confirm
 ## Running Tests
 
 ```bash
-cd use-cases/dutch_node/human_ai_interaction_testing
+cd use-cases/dutch-node/human_ai_interaction_testing
 pip install -r requirements.txt
 pytest tests/ -v
 ```

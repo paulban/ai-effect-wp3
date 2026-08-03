@@ -15,10 +15,10 @@ and zips it for upload:
 
 Sources are always read from the live workspace files so the package stays in
 sync with code changes.  The output folder and zip are written to
-  use-cases/dutch_node/
+  use-cases/dutch-node/
 and git-ignored via the .gitignore in that directory (if present).
 
-Usage (from repo root or from use-cases/dutch_node/):
+Usage (from repo root or from use-cases/dutch-node/):
     python test_pipelines/build_ai4eu_package.py
     python test_pipelines/build_ai4eu_package.py --out-dir /tmp/my_package
 """
@@ -36,9 +36,9 @@ from pathlib import Path
 
 # ── locate source files ───────────────────────────────────────────────────────
 
-# This script lives in  dutch_node/test_pipelines/
+# This script lives in  dutch-node/test_pipelines/
 _SCRIPT_DIR = Path(__file__).resolve().parent
-_DUTCH_NODE = _SCRIPT_DIR.parent          # use-cases/dutch_node/
+_DUTCH_NODE = _SCRIPT_DIR.parent          # use-cases/dutch-node/
 
 _PROTO_SOURCES: dict[str, Path] = {
     # proto files (always read from the canonical service directories)

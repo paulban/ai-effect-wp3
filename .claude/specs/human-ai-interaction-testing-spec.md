@@ -84,7 +84,7 @@ This spec replaces the previous scaffold design and is the authoritative contrac
 
 - **Assumption:** The full CAB platform is running and healthy before `StartHumanAISession` is called. WP3 does not health-check the CAB platform at session start.
 - **Assumption:** `powergrid-simulator-app` is the "web-app / Case 2" mode (single `powergrid-simulator-app` image, port 5100) as described in `InteractiveAI/usecases_examples/PowerGrid/README.md`. The separate `app` + `api` two-container Case 1 mode is out of scope.
-- **Assumption:** The hmisurveys static files are in `use-cases/dutch_node/human_ai_interaction_testing/hmisurveys/` and the `hai-survey-wrapper` Dockerfile copies them into the image at build time.
+- **Assumption:** The hmisurveys static files are in `use-cases/dutch-node/human_ai_interaction_testing/hmisurveys/` and the `hai-survey-wrapper` Dockerfile copies them into the image at build time.
 - **Assumption:** `VITE_POWERGRID_SIMU` URL (baked into the InteractiveAI frontend at build time) already points to `powergrid-simulator-app` at the correct address. This is not managed by WP3.
 - **Constraint:** The Docker SDK requires `/var/run/docker.sock` to be mounted into the WP3 service container. This is already present in `docker-compose-all.yml`.
 - **Constraint:** The existing `session_manager.py`, `session_operations.py`, and `human_ai_interaction_testing.proto` define the interfaces that must be respected — field names and function signatures must not change.
@@ -210,13 +210,13 @@ This spec replaces the previous scaffold design and is the authoritative contrac
 
 **Execution model:** Async I/O is not used. gRPC server uses `ThreadPoolExecutor(max_workers=10)`. Background polling thread is a `daemon=True` `threading.Thread`. The Flask sidecar in `hai-survey-wrapper` is synchronous (standard `flask run`).
 
-**Entry point:** `use-cases/dutch_node/human_ai_interaction_testing/main.py` (existing). The new `POST /collect/session-trace` endpoint must be registered in the FastAPI control-plane app (see `common/control_interface.py`).
+**Entry point:** `use-cases/dutch-node/human_ai_interaction_testing/main.py` (existing). The new `POST /collect/session-trace` endpoint must be registered in the FastAPI control-plane app (see `common/control_interface.py`).
 
 **Code locations:**
-- WP3 service: `use-cases/dutch_node/human_ai_interaction_testing/common/session_operations.py` — add `_handle_collect_session_trace()` and register it in `session_handlers`
-- `docker-compose-all.yml`: `use-cases/dutch_node/human_ai_interaction_testing/docker-compose-all.yml` — add all CAB platform services
-- `hai-survey-wrapper`: new directory `use-cases/dutch_node/human_ai_interaction_testing/hai-survey-wrapper/` containing `Dockerfile`, `app.py` (Flask sidecar), `static/index.html` (wrapper page)
-- Frontend change: `use-cases/dutch_node/human_ai_interaction_testing/InteractiveAI/frontend/src/utils/traceSessionExport.ts` — add ~5 lines after line 618 (`download(...)` call)
+- WP3 service: `use-cases/dutch-node/human_ai_interaction_testing/common/session_operations.py` — add `_handle_collect_session_trace()` and register it in `session_handlers`
+- `docker-compose-all.yml`: `use-cases/dutch-node/human_ai_interaction_testing/docker-compose-all.yml` — add all CAB platform services
+- `hai-survey-wrapper`: new directory `use-cases/dutch-node/human_ai_interaction_testing/hai-survey-wrapper/` containing `Dockerfile`, `app.py` (Flask sidecar), `static/index.html` (wrapper page)
+- Frontend change: `use-cases/dutch-node/human_ai_interaction_testing/InteractiveAI/frontend/src/utils/traceSessionExport.ts` — add ~5 lines after line 618 (`download(...)` call)
 
 **Existing interfaces to respect:**
 - `advance_phase(session_id, new_phase, *, gui_url, survey_url, container_id, survey_container_id, volume_name, error_message, kpis, survey_outcomes, session_metadata)` — do not change signature

@@ -59,7 +59,7 @@ echo ""
 echo "Testing: Synthetic Power Grid Service"
 echo "URL: $SERVICE_URL/health"
 if ! test_endpoint "Synthetic Power Grid" "$SERVICE_URL/health"; then
-    echo "Start the service first:  cd use-cases/dutch_node && docker compose -f docker-compose-all.yml up -d --build"
+    echo "Start the service first:  cd use-cases/dutch-node && docker compose -f docker-compose-all.yml up -d --build"
     exit 1
 fi
 echo ""
