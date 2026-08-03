@@ -16,7 +16,7 @@ class DockerComposeGenerator:
     def __init__(self, base_port=50051):
         self.base_port = base_port
         self.services = {}
-        self.networks = {"ai-effect-pipeline": {"driver": "bridge"}}
+        self.networks = {"ai-effect-services": {"name": "ai-effect-services", "external": True}}
         self.volumes = {}
     
     def load_blueprint(self, blueprint_file):
@@ -67,7 +67,7 @@ class DockerComposeGenerator:
             'image': image_name,
             'container_name': container_name,
             'ports': [f"{external_port}:{internal_port}"],
-            'networks': ['ai-effect-pipeline'],
+            'networks': ['ai-effect-services'],
             'volumes': ['./data:/app/data'],
             'environment': {
                 'GRPC_PORT': str(internal_port),
@@ -112,7 +112,7 @@ class DockerComposeGenerator:
             'volumes': [
                 '.:/export:ro'  # Mount current directory (export dir) as read-only
             ],
-            'networks': ['ai-effect-pipeline'],
+            'networks': ['ai-effect-services'],
             'depends_on': list(all_services.keys()),  # Wait for all services to start
             'restart': 'no'  # Run once and exit
         }

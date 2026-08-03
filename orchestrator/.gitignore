@@ -170,7 +170,7 @@ temp_*
 temp_proto_*/
 
 # Generated docker-compose files (moved to project root)
-# use-cases-platform/*/docker-compose.yml
+# use-cases-testing/*/docker-compose.yml
 
 # IDE files
 .vscode/

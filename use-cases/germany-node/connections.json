@@ -1,0 +1,22 @@
+{
+  "pipeline": {
+    "name": "Germany Node Pipeline",
+    "service_mapping": {
+      "data_provider": {"ip_address": "data-provider", "port": 8080},
+      "villas_chronics": {"ip_address": "villas-chronics", "port": 8080},
+      "output_formatter": {"ip_address": "output-formatter", "port": 8080}
+    },
+    "connections": [
+      {
+        "from_service": "data-provider",
+        "to_service": "villas-chronics",
+        "to_method": "GenerateChronics"
+      },
+      {
+        "from_service": "villas-chronics",
+        "to_service": "output-formatter",
+        "to_method": "FormatOutput"
+      }
+    ]
+  }
+}

@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY proto/ ./proto/
 RUN python -m grpc_tools.protoc -I./proto --python_out=. --grpc_python_out=. proto/*.proto
 
+COPY common/ ./common/
 COPY handler.py service.py ./
 
 ENV HOST=0.0.0.0

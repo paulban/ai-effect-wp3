@@ -2,11 +2,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY services/input_provider/requirements.txt .
+COPY file_based_energy_pipeline/services/input_provider/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY services/input_provider/handler.py .
-COPY services/input_provider/service.py .
+COPY common/ ./common/
+COPY file_based_energy_pipeline/services/input_provider/service.py .
 
 EXPOSE 8080
 

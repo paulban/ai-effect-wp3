@@ -1,0 +1,48 @@
+nodes = {
+
+    file_node = {
+        type = "file"
+        format = {
+            type = "csv"
+            separator = ","
+            delimiter = "\n"
+            skip_first_line = false
+            header = true
+        }
+        uris = ("{{LOAD_URI}}", "{{SGEN_URI}}")
+        uri = "dummy_uri"
+        in = {
+            read_mode = "all"
+        }
+
+        hooks = (
+            {
+                type = "create_chronics"
+                    loads_dir = "{{LOADS_DIR}}"
+                    sgens_dir = "{{SGENS_DIR}}"
+                    grid = "{{GRID_FILE}}"
+                    output = "{{OUTPUT_DIR}}"
+                    round_decimals = {{ROUND_DECIMALS}}
+                    compress = {{COMPRESS}}
+                    negate_sgens = true
+                    column_template = "load_{bus}_{idx}"
+            }
+        )
+    },
+    dummy_node = {
+        type = "file"
+        format = "csv"
+        uri = "dummy"
+        out = {
+
+        }
+    }
+}
+
+paths = (
+    {
+        in = "file_node",
+        out = "dummy_node"
+        hooks = ( { type = "print" } )
+    }
+)

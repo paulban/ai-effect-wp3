@@ -2,11 +2,11 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY services/report_generator/requirements.txt .
+COPY file_based_energy_pipeline/services/report_generator/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY services/report_generator/handler.py .
-COPY services/report_generator/service.py .
+COPY common/ ./common/
+COPY file_based_energy_pipeline/services/report_generator/service.py .
 
 EXPOSE 8080
 

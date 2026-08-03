@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package input_provider;
+
+// Input Provider Service - Provides initial configuration to the pipeline
+service InputProvider {
+  rpc GetConfiguration(GetConfigurationRequest) returns (GetConfigurationResponse);
+}
+
+message GetConfigurationRequest {
+  // Empty request - configuration is predefined
+}
+
+message GetConfigurationResponse {
+  bool success = 1;
+  string message = 2;
+  int32 num_records = 3;  // Number of records to generate
+  string output_format = 4;  // Output format (e.g., "csv", "json")
+}

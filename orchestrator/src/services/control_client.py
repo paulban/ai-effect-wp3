@@ -78,11 +78,12 @@ class OutputResponse(BaseModel):
 class ControlClient:
     """HTTP client for service control endpoints."""
 
-    def __init__(self, timeout: float = 30.0):
-        """Initialize client with timeout."""
+    def __init__(self, timeout: float = 30.0, api_key: str | None = None):
+        """Initialize client with timeout and optional bearer token."""
         if timeout <= 0:
             raise ValueError("timeout must be positive")
         self._timeout = timeout
+        self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
     def execute(
         self,
@@ -107,7 +108,7 @@ class ControlClient:
 
         try:
             with httpx.Client(timeout=self._timeout) as client:
-                response = client.post(url, json=request.model_dump(mode="json"))
+                response = client.post(url, json=request.model_dump(mode="json"), headers=self._headers)
         except httpx.ConnectError as e:
             raise ControlClientError(f"Connection failed: {e}") from e
         except httpx.TimeoutException as e:
@@ -137,7 +138,7 @@ class ControlClient:
 
         try:
             with httpx.Client(timeout=self._timeout) as client:
-                response = client.get(url)
+                response = client.get(url, headers=self._headers)
         except httpx.ConnectError as e:
             raise ControlClientError(f"Connection failed: {e}") from e
         except httpx.TimeoutException as e:
@@ -167,7 +168,7 @@ class ControlClient:
 
         try:
             with httpx.Client(timeout=self._timeout) as client:
-                response = client.get(url)
+                response = client.get(url, headers=self._headers)
         except httpx.ConnectError as e:
             raise ControlClientError(f"Connection failed: {e}") from e
         except httpx.TimeoutException as e:

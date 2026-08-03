@@ -1,0 +1,102 @@
+{
+    "nodes": [
+        {
+            "proto_uri": "microservice/data_generator1.proto",
+            "image": "portugal-node-integrated-synthetic-data:latest",
+            "node_type": "DataSink",
+            "container_name": "data_generator1",
+            "operation_signature_list": [
+                {
+                    "connected_to": [],
+                    "operation_signature": {
+                        "operation_name": "GenerateData",
+                        "output_message_name": "GenerateDataResponse",
+                        "input_message_name": "TrainModelResponse",
+                        "output_message_stream": false,
+                        "input_message_stream": false
+                    }
+                }
+            ]
+        },
+        {
+            "proto_uri": "microservice/data_loader1.proto",
+            "image": "portugal-node-integrated-data-provision:latest",
+            "node_type": "DataSource",
+            "container_name": "data_loader1",
+            "operation_signature_list": [
+                {
+                    "connected_to": [
+                        {
+                            "container_name": "feature_engineer1",
+                            "operation_signature": {
+                                "operation_name": "ApplyFunction"
+                            }
+                        }
+                    ],
+                    "operation_signature": {
+                        "operation_name": "ExecuteQuery",
+                        "output_message_name": "ExecuteQueryResponse",
+                        "input_message_name": "ExecuteQueryRequest",
+                        "output_message_stream": false,
+                        "input_message_stream": false
+                    }
+                }
+            ]
+        },
+        {
+            "proto_uri": "microservice/feature_engineer1.proto",
+            "image": "portugal-node-integrated-knowledge-store:latest",
+            "node_type": "MLModel",
+            "container_name": "feature_engineer1",
+            "operation_signature_list": [
+                {
+                    "connected_to": [
+                        {
+                            "container_name": "model_trainer1",
+                            "operation_signature": {
+                                "operation_name": "TrainModel"
+                            }
+                        }
+                    ],
+                    "operation_signature": {
+                        "operation_name": "ApplyFunction",
+                        "output_message_name": "ApplyFunctionResponse",
+                        "input_message_name": "ExecuteQueryResponse",
+                        "output_message_stream": false,
+                        "input_message_stream": false
+                    }
+                }
+            ]
+        },
+        {
+            "proto_uri": "microservice/model_trainer1.proto",
+            "image": "portugal-node-integrated-synthetic-data:latest",
+            "node_type": "MLModel",
+            "container_name": "model_trainer1",
+            "operation_signature_list": [
+                {
+                    "connected_to": [
+                        {
+                            "container_name": "data_generator1",
+                            "operation_signature": {
+                                "operation_name": "GenerateData"
+                            }
+                        }
+                    ],
+                    "operation_signature": {
+                        "operation_name": "TrainModel",
+                        "output_message_name": "TrainModelResponse",
+                        "input_message_name": "ApplyFunctionResponse",
+                        "output_message_stream": false,
+                        "input_message_stream": false
+                    }
+                }
+            ]
+        }
+    ],
+    "name": "Portugal-Node-Integrated",
+    "pipeline_id": "83fecc3a-ceda-475c-97c2-58939ecc49a8",
+    "creation_date": "2026-02-25 01:55:53.040560",
+    "type": "pipeline-topology/v2",
+    "version": "2.0"
+}

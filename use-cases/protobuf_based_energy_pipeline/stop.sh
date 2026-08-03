@@ -1,13 +1,9 @@
 #!/bin/bash
+set -e
 
-echo "Stopping Protobuf-Based Energy Pipeline Services..."
-echo "====================================================="
+cd "$(dirname "$0")"
 
-# Stop and remove containers
+echo "Stopping protobuf-based energy pipeline..."
 docker compose down
 
-echo ""
-echo "Services stopped successfully!"
-echo ""
-echo "To remove volumes as well, run: docker compose down -v"
-echo "To start services again: ./start.sh"
+echo "Done."

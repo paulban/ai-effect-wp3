@@ -1,0 +1,16 @@
+{
+  "pipeline": {
+    "name": "TEF Synthetic Data Pipeline (Sidecar)",
+    "service_mapping": {
+      "data_loader": {"ip_address": "data-provision-adapter", "port": 8080},
+      "feature_engineer": {"ip_address": "knowledge-store-adapter", "port": 8080},
+      "model_trainer": {"ip_address": "synthetic-data-adapter", "port": 8080},
+      "data_generator": {"ip_address": "synthetic-data-adapter", "port": 8080}
+    },
+    "connections": [
+      {"from_service": "data_loader", "from_method": "ExecuteQuery", "to_service": "feature_engineer", "to_method": "ApplyFunction"},
+      {"from_service": "feature_engineer", "from_method": "ApplyFunction", "to_service": "model_trainer", "to_method": "TrainModel"},
+      {"from_service": "model_trainer", "from_method": "TrainModel", "to_service": "data_generator", "to_method": "GenerateData"}
+    ]
+  }
+}

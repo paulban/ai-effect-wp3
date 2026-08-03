@@ -20,7 +20,7 @@ This starts:
 docker compose ps
 
 # Check health
-curl http://localhost:18000/health
+curl -s http://localhost:18000/health | jq .
 ```
 
 ## API Endpoints
@@ -35,32 +35,32 @@ curl http://localhost:18000/health
 ## Submit a Workflow
 
 ```bash
-curl -X POST http://localhost:18000/workflows \
+curl -s -X POST http://localhost:18000/workflows \
   -H "Content-Type: application/json" \
   -d '{
     "blueprint": {...},
     "dockerinfo": {...},
     "inputs": [{"protocol": "inline", "uri": "...", "format": "json"}]
-  }'
+  }' | jq .
 ```
 
 ## Service Network
 
-Workers automatically join the `ai-effect-services` network to reach external services.
+Workers automatically join the `ai-effect-services` Docker network to reach services by DNS name.
 
-**Startup order:** Services must start first (they create the network). If you need to start orchestrator first, create the network manually:
+The network is auto-created by the use case `start.sh` scripts and the root-level `./start.sh` convenience script. If starting the orchestrator first, create it manually:
 
 ```bash
 docker network create ai-effect-services
 ```
 
-Services should use this network name in their docker-compose:
+Services declare this network in their docker-compose:
 
 ```yaml
 networks:
-  my-network:
-    name: ai-effect-services    # Must match this name
-    driver: bridge
+  default:
+    name: ai-effect-services
+    external: true
 ```
 
 To verify connectivity:
@@ -117,6 +117,43 @@ REDIS_URL=redis://localhost:6379 python -m src.main
 # Start worker (separate terminal)
 REDIS_URL=redis://localhost:6379 python -m src.worker_daemon
 ```
+
+## Using with the Portal
+
+The orchestrator is the execution backend for the [AI-Effect WP3 Portal](https://portal.renewenergy.io). The portal submits workflows via the REST API and polls for status. Two common setups:
+
+### Local orchestrator + ngrok (testing)
+
+Run the orchestrator locally and expose it to the portal via ngrok:
+
+```bash
+# Start orchestrator
+ORCHESTRATOR_API_KEY=your-key docker compose up -d
+
+# Expose via ngrok
+ngrok http 18000
+# → copy the https://xxx.ngrok-free.app URL
+```
+
+Set the ngrok URL as the **Orchestrator URL** on the solution in the portal (either in the solution Edit page or directly in the deploy dialog).
+
+> **ngrok is for testing only.** The free tier gives a different URL each restart. For a stable deployment, use a reverse proxy instead — see below.
+
+### Server orchestrator (stable)
+
+Deploy the orchestrator on a server and expose it via a reverse proxy with HTTPS. No code changes are needed — the orchestrator serves plain HTTP; TLS termination happens at the proxy layer (nginx, Traefik, Caddy all work).
+
+```bash
+# On your server:
+ORCHESTRATOR_API_KEY=your-key docker compose up -d
+# Then configure your reverse proxy to forward HTTPS → localhost:18000
+```
+
+Set `https://your-orchestrator.example.com` as the Orchestrator URL in the portal. The portal can also be configured with a server-side default (`ORCHESTRATOR_URL` env var) so solutions don't need the URL set explicitly.
+
+The same HTTPS-via-proxy approach applies to the pipeline services (each runs on port `8080` internally).
+
+---
 
 ## Environment Variables
 

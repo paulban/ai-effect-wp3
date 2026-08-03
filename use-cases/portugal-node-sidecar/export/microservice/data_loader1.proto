@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package data_provision;
+
+// ====================================================================================
+// Data Provision Service - ClickHouse Query API
+// REST API Wrapper Protobuf Definitions
+// ====================================================================================
+//
+// This protobuf defines the interface for the Data Provision REST API service.
+// The actual service uses FastAPI/HTTP to execute read-only queries against
+// a ClickHouse database, but these definitions allow the platform designer to
+// understand the service interface for visual workflow design.
+//
+// REST Endpoints:
+// - GET  /schema
+// - POST /query?format={json|csv|xlsx|parquet}
+// ====================================================================================
+
+service DataProvision {
+  // Get database schema information
+  rpc GetSchema(GetSchemaRequest) returns (GetSchemaResponse);
+
+  // Execute a read-only SQL query
+  rpc ExecuteQuery(ExecuteQueryRequest) returns (ExecuteQueryResponse);
+}
+
+// ====================================================================================
+// Schema Information
+// ====================================================================================
+
+message GetSchemaRequest {
+  // No parameters needed
+}
+
+message ColumnInfo {
+  string name = 1;
+  string type = 2;
+  string comment = 3;
+}
+
+message TableInfo {
+  string name = 1;
+  string comment = 2;
+  repeated ColumnInfo columns = 3;
+}
+
+message SchemaInfo {
+  string schema_name = 1;
+  repeated TableInfo tables = 2;
+}
+
+message GetSchemaResponse {
+  repeated SchemaInfo schemas = 1;
+}
+
+// ====================================================================================
+// Query Execution
+// ====================================================================================
+
+enum OutputFormat {
+  OUTPUT_FORMAT_UNSPECIFIED = 0;
+  OUTPUT_FORMAT_JSON = 1;
+  OUTPUT_FORMAT_CSV = 2;
+  OUTPUT_FORMAT_XLSX = 3;
+  OUTPUT_FORMAT_PARQUET = 4;
+}
+
+message ExecuteQueryRequest {
+  string sql_query = 1;
+  OutputFormat format = 2;  // Defaults to CSV
+}
+
+message QueryRow {
+  map<string, string> fields = 1;  // Key-value pairs for each column
+}
+
+message ExecuteQueryResponse {
+  oneof response {
+    JsonResult json_result = 1;    // If JSON format requested
+    FileResult file_result = 2;    // If other format requested (CSV, XLSX, Parquet)
+  }
+}
+
+message JsonResult {
+  repeated QueryRow data = 1;
+}
+
+message FileResult {
+  bytes file_data = 1;
+  string file_name = 2;
+  string media_type = 3;
+}

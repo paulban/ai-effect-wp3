@@ -1,0 +1,27 @@
+{
+    "use_case_name": "portugal-node-integrated",
+    "use_case_directory": "portugal-node-integrated",
+    "source_path": "../../use-cases/portugal-node-integrated",
+    "services": [
+        {
+            "service_name": "synthetic-data",
+            "container_name": "data_generator1",
+            "image_name": "portugal-node-integrated-synthetic-data:latest"
+        },
+        {
+            "service_name": "data-provision",
+            "container_name": "data_loader1",
+            "image_name": "portugal-node-integrated-data-provision:latest"
+        },
+        {
+            "service_name": "knowledge-store",
+            "container_name": "feature_engineer1",
+            "image_name": "portugal-node-integrated-knowledge-store:latest"
+        },
+        {
+            "service_name": "synthetic-data",
+            "container_name": "model_trainer1",
+            "image_name": "portugal-node-integrated-synthetic-data:latest"
+        }
+    ]
+}

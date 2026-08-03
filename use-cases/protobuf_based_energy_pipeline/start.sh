@@ -1,26 +1,18 @@
 #!/bin/bash
+set -e
 
-echo "Starting Protobuf-Based Energy Pipeline Services..."
-echo "====================================================="
+cd "$(dirname "$0")"
 
-# Build and start all services in detached mode
+docker network create ai-effect-services 2>/dev/null || true
+
+echo "Building and starting protobuf-based energy pipeline..."
 docker compose up --build -d
 
 echo ""
-echo "Services started successfully!"
+echo "Services:"
+echo "  input-provider:   http://localhost:18181"
+echo "  data-generator:   http://localhost:18182 (gRPC: 50152)"
+echo "  data-analyzer:    http://localhost:18183 (gRPC: 50153)"
+echo "  report-generator: http://localhost:18184 (gRPC: 50154)"
 echo ""
-echo "HTTP Control Interface (for orchestrator):"
-echo "  - Input Provider:    http://localhost:18081/control/execute"
-echo "  - Data Generator:    http://localhost:18082/control/execute"
-echo "  - Data Analyzer:     http://localhost:18083/control/execute"
-echo "  - Report Generator:  http://localhost:18084/control/execute"
-echo ""
-echo "gRPC Data Interface (for direct service-to-service communication):"
-echo "  - Input Provider:    localhost:50051"
-echo "  - Data Generator:    localhost:50052"
-echo "  - Data Analyzer:     localhost:50053"
-echo "  - Report Generator:  localhost:50054"
-echo ""
-echo "To view logs: docker compose logs -f"
-echo "To stop services: ./stop.sh"
-echo "To submit workflow: ./scripts/submit-workflow.sh"
+echo "Check logs: docker compose logs -f"

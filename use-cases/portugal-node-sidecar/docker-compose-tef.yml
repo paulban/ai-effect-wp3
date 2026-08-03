@@ -1,0 +1,111 @@
+# TEF Services for Sidecar Approach
+#
+# Runs the TEF services WITHOUT integrated adapters.
+# The AI-Effect control interface is provided by separate sidecar adapter containers.
+#
+# Prerequisites:
+#   1. Copy TEF service source code into use-cases-testing/portugal-node-sidecar/
+#   2. Place test data at data/real_data.csv
+#
+# See RUNNING.md for detailed setup instructions.
+
+services:
+  sc-clickhouse-server:
+    image: clickhouse/clickhouse-server:latest-alpine
+    container_name: tef-sc-clickhouse
+    ports:
+      - "8124:8123"
+      - "9001:9000"
+    environment:
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=V0ltF3@t5?store
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    networks:
+      - tef-network
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --query='SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  sc-data-provision:
+    build:
+      context: ./data_provision
+    container_name: tef-sc-data-provision
+    ports:
+      - "8011:600"
+    depends_on:
+      sc-clickhouse-server:
+        condition: service_healthy
+    environment:
+      - CLICKHOUSE_HOST=sc-clickhouse-server
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=V0ltF3@t5?store
+      - SELF_URL=http://sc-data-provision:600
+    volumes:
+      - ./data/real_data.csv:/app/real_data.csv:ro
+    networks:
+      - tef-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:600/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  sc-knowledge-store:
+    build:
+      context: ./knowledge_store
+    container_name: tef-sc-knowledge-store
+    ports:
+      - "8012:8000"
+    environment:
+      - SELF_URL=http://sc-knowledge-store:8000
+      - DATA_PROVISION_URL=http://sc-data-provision:600
+    networks:
+      - tef-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  sc-synthetic-data:
+    build:
+      context: ./synthetic_data_generation
+    container_name: tef-sc-synthetic-data
+    ports:
+      - "8013:600"
+    environment:
+      - ML_GRETEL_PORT=600
+      - ML_GRETEL_RELOAD=False
+      - SELF_URL=http://sc-synthetic-data:600
+    volumes:
+      - synthetic_models:/app/models
+    networks:
+      - tef-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:600/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  clickhouse_data:
+    name: tef-sc-clickhouse-data
+  synthetic_models:
+    name: tef-sc-synthetic-models
+
+networks:
+  tef-network:
+    name: ai-effect-services
+    driver: bridge

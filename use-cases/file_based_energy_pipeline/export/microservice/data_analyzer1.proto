@@ -1,0 +1,23 @@
+syntax = "proto3";
+package data_analyzer;
+
+// Mirrors data_generator.GenerateDataResponse so AI4EU Designer can connect them.
+message GenerateDataResponse {
+  bool success = 1;
+  string message = 2;
+  int32 records_generated = 3;
+  string output_file_path = 4;
+}
+
+message AnalyzeDataResponse {
+  bool success = 1;
+  string message = 2;
+  int32 total_records = 3;
+  int32 anomalies_detected = 4;
+  float average_efficiency = 5;
+  string output_file_path = 6;
+}
+
+service DataAnalyzerService {
+  rpc AnalyzeData(GenerateDataResponse) returns (AnalyzeDataResponse);
+}

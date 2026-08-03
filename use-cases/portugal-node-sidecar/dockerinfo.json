@@ -1,0 +1,24 @@
+{
+  "docker_info_list": [
+    {
+      "container_name": "sidecar_data_loader",
+      "ip_address": "data-provision-adapter",
+      "port": "8080"
+    },
+    {
+      "container_name": "sidecar_feature_engineer",
+      "ip_address": "knowledge-store-adapter",
+      "port": "8080"
+    },
+    {
+      "container_name": "sidecar_model_trainer",
+      "ip_address": "synthetic-data-adapter",
+      "port": "8080"
+    },
+    {
+      "container_name": "sidecar_data_generator",
+      "ip_address": "synthetic-data-adapter",
+      "port": "8080"
+    }
+  ]
+}

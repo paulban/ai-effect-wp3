@@ -1,0 +1,24 @@
+{
+    "docker_info_list": [
+        {
+            "container_name": "data_analyzer1",
+            "ip_address": "data-analyzer",
+            "port": "8080"
+        },
+        {
+            "container_name": "data_generator1",
+            "ip_address": "data-generator",
+            "port": "8080"
+        },
+        {
+            "container_name": "input_provider1",
+            "ip_address": "input-provider",
+            "port": "8080"
+        },
+        {
+            "container_name": "report_generator1",
+            "ip_address": "report-generator",
+            "port": "8080"
+        }
+    ]
+}

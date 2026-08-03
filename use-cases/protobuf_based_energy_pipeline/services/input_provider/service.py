@@ -12,7 +12,7 @@ import json
 import logging
 import sys
 
-from handler import DataReference, ExecuteRequest, ExecuteResponse, run
+from common.sequential import DataReference, ExecuteRequest, ExecuteResponse, run
 
 logger = logging.getLogger(__name__)
 

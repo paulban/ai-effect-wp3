@@ -1,0 +1,28 @@
+syntax = "proto3";
+package data_generator;
+
+// Mirrors input_provider.GetConfigurationResponse so AI4EU Designer can connect them.
+message GetConfigurationResponse {
+  bool success = 1;
+  string message = 2;
+  int32 num_records = 3;
+}
+
+message EnergyRecord {
+  string timestamp = 1;
+  string household_id = 2;
+  double power_consumption = 3;
+  double voltage = 4;
+  double current = 5;
+}
+
+message GenerateDataResponse {
+  bool success = 1;
+  string message = 2;
+  repeated EnergyRecord records = 3;
+}
+
+service DataGeneratorService {
+  // Generate synthetic energy data
+  rpc GenerateData(GetConfigurationResponse) returns (GenerateDataResponse);
+}

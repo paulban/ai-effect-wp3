@@ -16,7 +16,7 @@ from concurrent import futures
 
 import grpc
 
-from handler import DataReference, ExecuteRequest, ExecuteResponse, run
+from common.sequential import DataReference, ExecuteRequest, ExecuteResponse, run
 
 # Import generated protobuf classes
 import data_analyzer_pb2

@@ -1,0 +1,17 @@
+syntax = "proto3";
+package output_formatter;
+
+message FormatOutputRequest {
+  string chronics_path = 1;
+}
+
+message FormatOutputResponse {
+  bool success = 1;
+  string message = 2;
+  string output_path = 3;
+  int32 files_validated = 4;
+}
+
+service OutputFormatterService {
+  rpc FormatOutput(FormatOutputRequest) returns (FormatOutputResponse);
+}

@@ -1,0 +1,16 @@
+syntax = "proto3";
+package data_provider;
+
+message ProvideDataRequest {
+  string data_source = 1;
+}
+
+message ProvideDataResponse {
+  bool success = 1;
+  string message = 2;
+  string data_path = 3;
+}
+
+service DataProviderService {
+  rpc ProvideData(ProvideDataRequest) returns (ProvideDataResponse);
+}

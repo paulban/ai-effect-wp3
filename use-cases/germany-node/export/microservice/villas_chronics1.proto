@@ -1,0 +1,19 @@
+syntax = "proto3";
+package villas_chronics;
+
+// Mirrors data_provider.ProvideDataResponse so AI4EU Designer can connect them.
+message ProvideDataResponse {
+  bool success = 1;
+  string message = 2;
+  string data_path = 3;
+}
+
+message GenerateChronicsResponse {
+  bool success = 1;
+  string message = 2;
+  string chronics_path = 3;
+}
+
+service VillasChronicsService {
+  rpc GenerateChronics(ProvideDataResponse) returns (GenerateChronicsResponse);
+}

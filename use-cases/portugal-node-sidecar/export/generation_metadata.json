@@ -1,0 +1,27 @@
+{
+    "use_case_name": "portugal-node-sidecar",
+    "use_case_directory": "portugal-node-sidecar",
+    "source_path": "../../use-cases/portugal-node-sidecar",
+    "services": [
+        {
+            "service_name": "synthetic-data-adapter",
+            "container_name": "data_generator1",
+            "image_name": "portugal-node-sidecar-synthetic-data-adapter:latest"
+        },
+        {
+            "service_name": "data-provision-adapter",
+            "container_name": "data_loader1",
+            "image_name": "portugal-node-sidecar-data-provision-adapter:latest"
+        },
+        {
+            "service_name": "knowledge-store-adapter",
+            "container_name": "feature_engineer1",
+            "image_name": "portugal-node-sidecar-knowledge-store-adapter:latest"
+        },
+        {
+            "service_name": "synthetic-data-adapter",
+            "container_name": "model_trainer1",
+            "image_name": "portugal-node-sidecar-synthetic-data-adapter:latest"
+        }
+    ]
+}

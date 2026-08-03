@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 
 import grpc
 
-from handler import DataReference, ExecuteRequest, ExecuteResponse, run
+from common.sequential import DataReference, ExecuteRequest, ExecuteResponse, run
 
 # Import generated protobuf classes
 import common_pb2

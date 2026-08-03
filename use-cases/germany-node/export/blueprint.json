@@ -1,0 +1,77 @@
+{
+    "nodes": [
+        {
+            "proto_uri": "microservice/data_provider1.proto",
+            "image": "germany-node-data-provider:latest",
+            "node_type": "DataSource",
+            "container_name": "data_provider1",
+            "operation_signature_list": [
+                {
+                    "connected_to": [
+                        {
+                            "container_name": "villas_chronics1",
+                            "operation_signature": {
+                                "operation_name": "GenerateChronics"
+                            }
+                        }
+                    ],
+                    "operation_signature": {
+                        "operation_name": "ProvideData",
+                        "output_message_name": "ProvideDataResponse",
+                        "input_message_name": "ProvideDataRequest",
+                        "output_message_stream": false,
+                        "input_message_stream": false
+                    }
+                }
+            ]
+        },
+        {
+            "proto_uri": "microservice/output_formatter1.proto",
+            "image": "germany-node-output-formatter:latest",
+            "node_type": "DataSink",
+            "container_name": "output_formatter1",
+            "operation_signature_list": [
+                {
+                    "connected_to": [],
+                    "operation_signature": {
+                        "operation_name": "FormatOutput",
+                        "output_message_name": "FormatOutputResponse",
+                        "input_message_name": "GenerateChronicsResponse",
+                        "output_message_stream": false,
+                        "input_message_stream": false
+                    }
+                }
+            ]
+        },
+        {
+            "proto_uri": "microservice/villas_chronics1.proto",
+            "image": "germany-node-villas-chronics:latest",
+            "node_type": "MLModel",
+            "container_name": "villas_chronics1",
+            "operation_signature_list": [
+                {
+                    "connected_to": [
+                        {
+                            "container_name": "output_formatter1",
+                            "operation_signature": {
+                                "operation_name": "FormatOutput"
+                            }
+                        }
+                    ],
+                    "operation_signature": {
+                        "operation_name": "GenerateChronics",
+                        "output_message_name": "GenerateChronicsResponse",
+                        "input_message_name": "ProvideDataResponse",
+                        "output_message_stream": false,
+                        "input_message_stream": false
+                    }
+                }
+            ]
+        }
+    ],
+    "name": "Germany-Node",
+    "pipeline_id": "9b94b441-8858-442e-9edd-bdd67e2cd487",
+    "creation_date": "2026-02-25 01:55:52.179500",
+    "type": "pipeline-topology/v2",
+    "version": "2.0"
+}

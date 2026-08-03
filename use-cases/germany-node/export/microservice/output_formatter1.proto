@@ -1,0 +1,20 @@
+syntax = "proto3";
+package output_formatter;
+
+// Mirrors villas_chronics.GenerateChronicsResponse so AI4EU Designer can connect them.
+message GenerateChronicsResponse {
+  bool success = 1;
+  string message = 2;
+  string chronics_path = 3;
+}
+
+message FormatOutputResponse {
+  bool success = 1;
+  string message = 2;
+  string output_path = 3;
+  int32 files_validated = 4;
+}
+
+service OutputFormatterService {
+  rpc FormatOutput(GenerateChronicsResponse) returns (FormatOutputResponse);
+}

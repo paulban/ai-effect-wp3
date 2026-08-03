@@ -1,0 +1,194 @@
+syntax = "proto3";
+
+package knowledge_store;
+
+// ====================================================================================
+// Knowledge Store Service - Feature Engineering, Analytics, and Forecasting
+// REST API Wrapper Protobuf Definitions
+// ====================================================================================
+//
+// This protobuf defines the interface for the Knowledge Store REST API service.
+// The actual service uses FastAPI/HTTP, but these definitions allow the platform
+// designer to understand the service interface for visual workflow design.
+//
+// REST Endpoints:
+// - GET  /functions/tags
+// - GET  /functions/list
+// - POST /functions/apply
+// - GET  /recipes/list
+// - POST /recipes/apply
+// - GET  /examples/list
+// - GET  /examples/{dataset_name}
+// ====================================================================================
+
+service KnowledgeStore {
+  // List all available tags for filtering functions
+  rpc ListFunctionTags(ListFunctionTagsRequest) returns (ListFunctionTagsResponse);
+
+  // List available feature/analytical/forecasting functions
+  rpc ListFunctions(ListFunctionsRequest) returns (ListFunctionsResponse);
+
+  // Apply a function to a dataset
+  rpc ApplyFunction(ApplyFunctionRequest) returns (ApplyFunctionResponse);
+
+  // List available recipes
+  rpc ListRecipes(ListRecipesRequest) returns (ListRecipesResponse);
+
+  // Apply a recipe to a dataset
+  rpc ApplyRecipe(ApplyRecipeRequest) returns (ApplyRecipeResponse);
+
+  // List available example datasets
+  rpc ListExamples(ListExamplesRequest) returns (ListExamplesResponse);
+
+  // Retrieve an example dataset
+  rpc GetExample(GetExampleRequest) returns (GetExampleResponse);
+}
+
+// ====================================================================================
+// Function Tags
+// ====================================================================================
+
+message ListFunctionTagsRequest {
+  // No parameters needed
+}
+
+message ListFunctionTagsResponse {
+  repeated string tags = 1;
+}
+
+// ====================================================================================
+// Functions
+// ====================================================================================
+
+enum FunctionType {
+  FUNCTION_TYPE_UNSPECIFIED = 0;
+  FUNCTION_TYPE_FEATURE = 1;
+  FUNCTION_TYPE_ANALYTICAL = 2;
+  FUNCTION_TYPE_FORECASTING = 3;
+}
+
+message FunctionArgument {
+  string name = 1;
+  string type = 2;
+  string description = 3;
+  bool required = 4;
+  string default_value = 5;
+}
+
+message FunctionInfo {
+  string name = 1;
+  FunctionType function_type = 2;
+  string short_description = 3;
+  string description = 4;
+  repeated FunctionArgument arguments = 5;  // Only in detailed response
+  FunctionArgument returns = 6;             // Only in detailed response
+  string examples = 7;                       // Only in detailed response
+}
+
+message ListFunctionsRequest {
+  bool detailed = 1;
+  bool must_contain_all_tags = 2;
+  repeated string tags = 3;
+  FunctionType function_type = 4;
+}
+
+message ListFunctionsResponse {
+  repeated FunctionInfo functions = 1;
+}
+
+message ApplyFunctionRequest {
+  string feature_function_name = 1;
+  string feature_function_kwargs_json = 2;  // JSON string with function parameters
+  bytes file_data = 3;                       // The uploaded file (CSV, Excel, etc.)
+  string file_name = 4;                      // Original filename for extension detection
+}
+
+message DataRow {
+  map<string, string> fields = 1;  // Key-value pairs for each column
+}
+
+message ApplyFunctionResponse {
+  repeated DataRow data = 1;  // Result dataset as array of records
+}
+
+// ====================================================================================
+// Recipes
+// ====================================================================================
+
+message RecipeInfo {
+  string name = 1;
+  repeated string input_columns = 2;
+  string description = 3;              // Only in detailed response
+  repeated string use_cases = 4;       // Only in detailed response
+  repeated string tags = 5;            // Only in detailed response
+  string recipe_json = 6;              // Only in detailed response - JSON array of steps
+}
+
+message ListRecipesRequest {
+  bool detailed = 1;
+  repeated string tags = 2;
+}
+
+message ListRecipesResponse {
+  repeated RecipeInfo recipes = 1;
+}
+
+message ApplyRecipeRequest {
+  string recipe_name = 1;
+  bytes file_data = 2;      // The uploaded file (CSV, Excel, etc.)
+  string file_name = 3;     // Original filename for extension detection
+}
+
+message ApplyRecipeResponse {
+  repeated DataRow data = 1;  // Result dataset as array of records
+}
+
+// ====================================================================================
+// Examples
+// ====================================================================================
+
+enum FileFormat {
+  FILE_FORMAT_UNSPECIFIED = 0;
+  FILE_FORMAT_JSON = 1;
+  FILE_FORMAT_CSV = 2;
+  FILE_FORMAT_EXCEL = 3;
+  FILE_FORMAT_HDF5 = 4;
+  FILE_FORMAT_FEATHER = 5;
+  FILE_FORMAT_PARQUET = 6;
+  FILE_FORMAT_PICKLE = 7;
+}
+
+message ListExamplesRequest {
+  // No parameters needed
+}
+
+message ListExamplesResponse {
+  repeated string dataset_names = 1;
+}
+
+message GetExampleRequest {
+  string dataset_name = 1;
+  FileFormat file_format = 2;
+}
+
+message DatasetMetadata {
+  map<string, string> fields = 1;  // Arbitrary metadata key-value pairs
+}
+
+message GetExampleResponse {
+  oneof response {
+    JsonDataset json_dataset = 1;    // If JSON format requested
+    FileDataset file_dataset = 2;    // If other format requested
+  }
+}
+
+message JsonDataset {
+  DatasetMetadata metadata = 1;
+  repeated DataRow data = 2;
+}
+
+message FileDataset {
+  bytes file_data = 1;
+  string file_name = 2;
+  string media_type = 3;
+}

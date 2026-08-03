@@ -1,0 +1,4 @@
+# Ignore generated files, keep the input sample + this .gitignore
+*
+!.gitignore
+!raw_energy.csv

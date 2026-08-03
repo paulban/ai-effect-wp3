@@ -102,13 +102,33 @@ Protobuf templates also include:
 
 ## Control Interface
 
-Services must respond to these HTTP endpoints:
+The orchestrator drives services through these HTTP endpoints. This is the
+mandatory contract — implementing them is what makes a service drivable:
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/control/execute` | POST | Start task execution |
 | `/control/status/{task_id}` | GET | Poll task status (concurrent only) |
 | `/control/output/{task_id}` | GET | Get task output (concurrent only) |
+| `/health` | GET | Health check (monitoring) |
+
+`/control/output` returns a **DataReference** (`{protocol, uri, format}`), i.e.
+a pointer to the result — not the result itself. The orchestrator passes that
+pointer to the next task and never fetches the data.
+
+### Serving data is optional (data plane)
+
+How a service serves its data is **not** part of the orchestrator contract.
+The templates provide a convenience endpoint for the common HTTP case:
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/control/data/{task_id}` | GET | Serve raw payload bytes — **optional convenience** |
+
+A service may skip this entirely and return a DataReference with
+`protocol: inline` (bytes embedded), `protocol: grpc` (its own gRPC endpoint),
+or an `http`/`s3` `uri` pointing anywhere. The orchestrator behaves identically
+in all cases.
 
 ## Sequential vs Concurrent
 

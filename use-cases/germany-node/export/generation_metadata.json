@@ -1,0 +1,22 @@
+{
+    "use_case_name": "germany-node",
+    "use_case_directory": "germany-node",
+    "source_path": "../../use-cases/germany-node",
+    "services": [
+        {
+            "service_name": "data-provider",
+            "container_name": "data_provider1",
+            "image_name": "germany-node-data-provider:latest"
+        },
+        {
+            "service_name": "output-formatter",
+            "container_name": "output_formatter1",
+            "image_name": "germany-node-output-formatter:latest"
+        },
+        {
+            "service_name": "villas-chronics",
+            "container_name": "villas_chronics1",
+            "image_name": "germany-node-villas-chronics:latest"
+        }
+    ]
+}

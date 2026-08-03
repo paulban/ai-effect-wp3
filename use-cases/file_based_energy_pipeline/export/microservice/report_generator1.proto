@@ -1,0 +1,23 @@
+syntax = "proto3";
+package report_generator;
+
+// Mirrors data_analyzer.AnalyzeDataResponse so AI4EU Designer can connect them.
+message AnalyzeDataResponse {
+  bool success = 1;
+  string message = 2;
+  int32 total_records = 3;
+  int32 anomalies_detected = 4;
+  float average_efficiency = 5;
+  string output_file_path = 6;
+}
+
+message GenerateReportResponse {
+  bool success = 1;
+  string message = 2;
+  string report_path = 3;
+  string report_summary = 4;
+}
+
+service ReportGeneratorService {
+  rpc GenerateReport(AnalyzeDataResponse) returns (GenerateReportResponse);
+}

@@ -1,0 +1,127 @@
+syntax = "proto3";
+
+package synthetic_data_generation;
+
+// ====================================================================================
+// Synthetic Data Generation Service - DoppelGANger Model API
+// REST API Wrapper Protobuf Definitions
+// ====================================================================================
+//
+// This protobuf defines the interface for the Synthetic Data Generation REST API.
+// The actual service uses FastAPI/HTTP and Gretel's DoppelGANger model for
+// training and generating synthetic time series data, but these definitions allow
+// the platform designer to understand the service interface for visual workflow design.
+//
+// REST Endpoints:
+// - POST /train
+// - GET  /generate?model_name={name}&user_id={id}&number_of_examples={n}&return_csv={bool}
+// - GET  /models?user_id={id}
+// - GET  /training_info?user_id={id}&model_name={name}
+// ====================================================================================
+
+service SyntheticDataGeneration {
+  // Train a new DoppelGANger model with uploaded data
+  rpc TrainModel(TrainModelRequest) returns (TrainModelResponse);
+
+  // Generate synthetic data using a trained model
+  rpc GenerateData(GenerateDataRequest) returns (GenerateDataResponse);
+
+  // List available trained models for a user
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+
+  // Get training progress information for a model
+  rpc GetTrainingInfo(GetTrainingInfoRequest) returns (GetTrainingInfoResponse);
+}
+
+// ====================================================================================
+// Model Training
+// ====================================================================================
+
+message TrainModelRequest {
+  bytes file_data = 1;           // CSV file with training data
+  string file_name = 2;          // Original filename
+  string user_id = 3;            // User identifier
+  string model_name = 4;         // Name for the model
+  string index_col = 5;          // Name of the datetime index column (default: "datetime")
+  bool overwrite = 6;            // Whether to overwrite existing model (default: false)
+  int32 sequence_len = 7;        // Sequence length for training (default: 100)
+  int32 batch_size = 8;          // Batch size for training (default: 1000)
+  int32 epochs = 9;              // Number of training epochs (default: 10)
+}
+
+message TrainModelResponse {
+  string message = 1;            // Success/failure message
+  string model_name = 2;         // Name of the trained model
+}
+
+// ====================================================================================
+// Data Generation
+// ====================================================================================
+
+message GenerateDataRequest {
+  string model_name = 1;         // Name of the trained model to use
+  string user_id = 2;            // User identifier
+  int32 number_of_examples = 3;  // Number of synthetic examples to generate (default: 1)
+  bool return_csv = 4;           // Return as CSV (true) or zip of parquet files (false)
+}
+
+message GenerateDataResponse {
+  oneof response {
+    CsvData csv_data = 1;        // If return_csv is true
+    ZipData zip_data = 2;        // If return_csv is false
+  }
+}
+
+message CsvData {
+  bytes file_data = 1;
+  string file_name = 2;          // Will be "synthetic_data.csv"
+}
+
+message ZipData {
+  bytes file_data = 1;
+  string file_name = 2;          // Will be "examples.zip"
+}
+
+// ====================================================================================
+// Model Listing
+// ====================================================================================
+
+message ListModelsRequest {
+  string user_id = 1;            // User identifier
+}
+
+message ModelInfo {
+  string name = 1;               // Model name
+}
+
+message ListModelsResponse {
+  repeated ModelInfo models = 1;
+}
+
+// ====================================================================================
+// Training Information
+// ====================================================================================
+
+message GetTrainingInfoRequest {
+  string user_id = 1;            // User identifier
+  string model_name = 2;         // Model name
+}
+
+message TrainingProgress {
+  int32 epoch = 1;               // Current epoch (1-indexed)
+  int32 total_epochs = 2;        // Total number of epochs
+  int32 batch = 3;               // Current batch (1-indexed)
+  int32 total_batches = 4;       // Total number of batches
+  string timestamp = 5;          // Timestamp of last update
+}
+
+message GetTrainingInfoResponse {
+  oneof response {
+    TrainingProgress progress = 1;    // If training info found
+    NoInfoMessage no_info = 2;        // If no training info found
+  }
+}
+
+message NoInfoMessage {
+  string message = 1;            // Message indicating no training info found
+}

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from handler import DataReference, ExecuteRequest, ExecuteResponse, run
+from common.sequential import DataReference, ExecuteRequest, ExecuteResponse, run
 
 logger = logging.getLogger(__name__)
 

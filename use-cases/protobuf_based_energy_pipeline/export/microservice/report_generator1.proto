@@ -1,0 +1,44 @@
+syntax = "proto3";
+package report_generator;
+
+message EnergyRecord {
+  string timestamp = 1;
+  string household_id = 2;
+  double power_consumption = 3;
+  double voltage = 4;
+  double current = 5;
+}
+
+message AnalyzedRecord {
+  EnergyRecord original = 1;
+  double efficiency_score = 2;
+  bool is_anomaly = 3;
+  string anomaly_reason = 4;
+}
+
+// Mirrors data_analyzer.AnalyzeDataResponse so AI4EU Designer can connect them.
+message AnalyzeDataResponse {
+  bool success = 1;
+  string message = 2;
+  repeated AnalyzedRecord analyzed_records = 3;
+  int32 total_records = 4;
+  int32 anomalies_detected = 5;
+  double average_efficiency = 6;
+}
+
+message ReportSection {
+  string title = 1;
+  repeated string content = 2;
+}
+
+message GenerateReportResponse {
+  bool success = 1;
+  string message = 2;
+  repeated ReportSection sections = 3;
+  string summary = 4;
+}
+
+service ReportGeneratorService {
+  // Generate a report from analyzed data
+  rpc GenerateReport(AnalyzeDataResponse) returns (GenerateReportResponse);
+}

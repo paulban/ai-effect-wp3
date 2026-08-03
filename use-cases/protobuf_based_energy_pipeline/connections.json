@@ -2,24 +2,30 @@
   "pipeline": {
     "name": "Protobuf-Based Energy Data Processing Pipeline",
     "description": "Direct protobuf message passing pipeline for energy data processing without intermediate files",
-    "start_service": "input_provider",
+    "start_service": "pb-input-provider",
+    "service_mapping": {
+      "input_provider": {"ip_address": "pb-input-provider", "port": 8080},
+      "data_generator": {"ip_address": "pb-data-generator", "port": 8080},
+      "data_analyzer": {"ip_address": "pb-data-analyzer", "port": 8080},
+      "report_generator": {"ip_address": "pb-report-generator", "port": 8080}
+    },
     "connections": [
       {
-        "from_service": "input_provider",
+        "from_service": "pb-input-provider",
         "from_method": "GetConfiguration",
-        "to_service": "data_generator",
+        "to_service": "pb-data-generator",
         "to_method": "GenerateData"
       },
       {
-        "from_service": "data_generator",
+        "from_service": "pb-data-generator",
         "from_method": "GenerateData",
-        "to_service": "data_analyzer",
+        "to_service": "pb-data-analyzer",
         "to_method": "AnalyzeData"
       },
       {
-        "from_service": "data_analyzer",
+        "from_service": "pb-data-analyzer",
         "from_method": "AnalyzeData",
-        "to_service": "report_generator",
+        "to_service": "pb-report-generator",
         "to_method": "GenerateReport"
       }
     ]

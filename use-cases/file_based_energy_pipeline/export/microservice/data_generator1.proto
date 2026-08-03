@@ -1,0 +1,21 @@
+syntax = "proto3";
+package data_generator;
+
+// Mirrors input_provider.GetConfigurationResponse so AI4EU Designer can connect them.
+message GetConfigurationResponse {
+  bool success = 1;
+  string message = 2;
+  int32 num_records = 3;
+  string output_format = 4;
+}
+
+message GenerateDataResponse {
+  bool success = 1;
+  string message = 2;
+  int32 records_generated = 3;
+  string output_file_path = 4;
+}
+
+service DataGeneratorService {
+  rpc GenerateData(GetConfigurationResponse) returns (GenerateDataResponse);
+}

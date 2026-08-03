@@ -1,45 +1,54 @@
 services:
-  input-provider:
+  pb-input-provider:
     build:
-      context: .
-      dockerfile: services/input_provider/Dockerfile
+      context: ../
+      dockerfile: protobuf_based_energy_pipeline/services/input_provider/Dockerfile
     ports:
-      - "18081:8080"   # HTTP control interface (no gRPC - config passed inline)
+      - "18181:8080"   # HTTP control interface (no gRPC - config passed inline)
     environment:
       - PORT=8080
+      - SERVICE_API_KEY=${SERVICE_API_KEY:-}
 
-  data-generator:
+  pb-data-generator:
     build:
-      context: .
-      dockerfile: services/data_generator/Dockerfile
+      context: ../
+      dockerfile: protobuf_based_energy_pipeline/services/data_generator/Dockerfile
     ports:
-      - "18082:8080"   # HTTP control interface
-      - "50052:50051"  # gRPC data interface
+      - "18182:8080"   # HTTP control interface
+      - "50152:50051"  # gRPC data interface
     environment:
       - PORT=8080
+      - SERVICE_API_KEY=${SERVICE_API_KEY:-}
       - GRPC_PORT=50051
-      - GRPC_HOST=data-generator
+      - GRPC_HOST=pb-data-generator
 
-  data-analyzer:
+  pb-data-analyzer:
     build:
-      context: .
-      dockerfile: services/data_analyzer/Dockerfile
+      context: ../
+      dockerfile: protobuf_based_energy_pipeline/services/data_analyzer/Dockerfile
     ports:
-      - "18083:8080"   # HTTP control interface
-      - "50053:50051"  # gRPC data interface
+      - "18183:8080"   # HTTP control interface
+      - "50153:50051"  # gRPC data interface
     environment:
       - PORT=8080
+      - SERVICE_API_KEY=${SERVICE_API_KEY:-}
       - GRPC_PORT=50051
-      - GRPC_HOST=data-analyzer
+      - GRPC_HOST=pb-data-analyzer
 
-  report-generator:
+  pb-report-generator:
     build:
-      context: .
-      dockerfile: services/report_generator/Dockerfile
+      context: ../
+      dockerfile: protobuf_based_energy_pipeline/services/report_generator/Dockerfile
     ports:
-      - "18084:8080"   # HTTP control interface
-      - "50054:50051"  # gRPC data interface
+      - "18184:8080"   # HTTP control interface
+      - "50154:50051"  # gRPC data interface
     environment:
       - PORT=8080
+      - SERVICE_API_KEY=${SERVICE_API_KEY:-}
       - GRPC_PORT=50051
-      - GRPC_HOST=report-generator
+      - GRPC_HOST=pb-report-generator
+
+networks:
+  default:
+    name: ai-effect-services
+    external: true

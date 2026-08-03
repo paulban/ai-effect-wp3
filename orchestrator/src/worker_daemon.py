@@ -75,6 +75,10 @@ class WorkerDaemon:
                 break
         return running
 
+    def load_services_key(self, workflow_id: str) -> str | None:
+        """Load services API key for a workflow from Redis."""
+        return self.redis_client.get(f"services_key:{workflow_id}")
+
     def process_workflow(self, workflow_id: str) -> bool:
         """Process one task for a workflow.
 
@@ -85,7 +89,9 @@ class WorkerDaemon:
             logger.warning(f"No endpoints for workflow {workflow_id}, skipping")
             return False
 
-        worker = Worker(self.engine, self.control_client, endpoints)
+        services_key = self.load_services_key(workflow_id)
+        client = ControlClient(api_key=services_key) if services_key else self.control_client
+        worker = Worker(self.engine, client, endpoints)
         return worker.process_task(workflow_id, timeout=0)
 
     def run(self) -> None:

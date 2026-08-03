@@ -1,0 +1,27 @@
+{
+    "use_case_name": "protobuf_based_energy_pipeline",
+    "use_case_directory": "protobuf_based_energy_pipeline",
+    "source_path": "../../use-cases/protobuf_based_energy_pipeline",
+    "services": [
+        {
+            "service_name": "pb-data-analyzer",
+            "container_name": "data_analyzer1",
+            "image_name": "protobuf_based_energy_pipeline-pb-data-analyzer:latest"
+        },
+        {
+            "service_name": "pb-data-generator",
+            "container_name": "data_generator1",
+            "image_name": "protobuf_based_energy_pipeline-pb-data-generator:latest"
+        },
+        {
+            "service_name": "pb-input-provider",
+            "container_name": "input_provider1",
+            "image_name": "protobuf_based_energy_pipeline-pb-input-provider:latest"
+        },
+        {
+            "service_name": "pb-report-generator",
+            "container_name": "report_generator1",
+            "image_name": "protobuf_based_energy_pipeline-pb-report-generator:latest"
+        }
+    ]
+}

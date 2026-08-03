@@ -1,0 +1,24 @@
+{
+    "docker_info_list": [
+        {
+            "container_name": "data_generator1",
+            "ip_address": "synthetic-data",
+            "port": "600"
+        },
+        {
+            "container_name": "data_loader1",
+            "ip_address": "data-provision",
+            "port": "600"
+        },
+        {
+            "container_name": "feature_engineer1",
+            "ip_address": "knowledge-store",
+            "port": "8000"
+        },
+        {
+            "container_name": "model_trainer1",
+            "ip_address": "synthetic-data",
+            "port": "600"
+        }
+    ]
+}

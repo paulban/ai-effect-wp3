@@ -3,6 +3,12 @@
     "name": "Energy Data Processing Pipeline",
     "description": "Sequential processing of energy data through generation, analysis, and reporting",
     "start_service": "input-provider",
+    "service_mapping": {
+      "input_provider": {"ip_address": "input-provider", "port": 8080},
+      "data_generator": {"ip_address": "data-generator", "port": 8080},
+      "data_analyzer": {"ip_address": "data-analyzer", "port": 8080},
+      "report_generator": {"ip_address": "report-generator", "port": 8080}
+    },
     "connections": [
       {
         "from_service": "input-provider",
