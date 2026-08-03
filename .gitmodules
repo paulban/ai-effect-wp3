@@ -1,0 +1,6 @@
+[submodule "use-cases/dutch-node/human_ai_interaction_testing/InteractiveAI"]
+	path = use-cases/dutch-node/human_ai_interaction_testing/InteractiveAI
+	url = https://github.com/AI-EFFECT/InteractiveAI.git
+[submodule "use-cases/dutch-node/human_ai_interaction_testing/hmisurveys"]
+	path = use-cases/dutch-node/human_ai_interaction_testing/hmisurveys
+	url = https://github.com/AI-EFFECT/hmisurveys.git

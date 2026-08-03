@@ -46,14 +46,38 @@ The operator workflow:
 4. hmisurveys writes `survey_outcomes.json` to the shared directory.
 5. WP3 detects both files and transitions the session to COMPLETED.
 
+## Submodules
+
+`InteractiveAI/` and `hmisurveys/` are **git submodules** pinned to specific
+commits of the AI-EFFECT forks:
+
+| Directory | Submodule URL |
+|-----------|---------------|
+| `InteractiveAI/` | `https://github.com/AI-EFFECT/InteractiveAI` |
+| `hmisurveys/` | `https://github.com/AI-EFFECT/hmisurveys` |
+
+A plain `git clone` leaves both directories **empty**, and
+`docker-compose-all.yml` then fails because it builds from `./InteractiveAI/backend`.
+Populate them with either:
+
+```bash
+git clone --recurse-submodules <this repo>       # fresh clone
+git submodule update --init --recursive          # existing clone
+```
+
+CI checkouts need the same (for `actions/checkout`, set `submodules: recursive`).
+
+To pull changes from the true upstreams, `cd` into the submodule and use the
+`upstream` remote (`ainetus/InteractiveAI`, `AI4REALNET/hmisurveys`), then commit
+the updated submodule pointer in this repository.
+
 ## Quick Start (Linux)
 
 ```bash
-# 1. Build the tool images locally (until official images are published — OQ-4)
-# git clone https://github.com/AI4REALNET/InteractiveAI && cd InteractiveAI
-# docker build -t interactiveai:latest .
-# git clone https://github.com/AI4REALNET/hmisurveys && cd hmisurveys
-# docker build -t hmisurveys:latest .
+# 1. Build the tool images from the submodules (until official images are
+#    published — OQ-4). Run from this directory:
+# docker build -t interactiveai:latest ./InteractiveAI
+# docker build -t hmisurveys:latest ./hmisurveys
 
 # 2. Set required environment variables
 export HAI_INTERACTIVE_AI_IMAGE=interactiveai:latest
