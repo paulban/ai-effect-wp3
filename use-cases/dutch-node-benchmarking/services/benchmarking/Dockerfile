@@ -24,6 +24,10 @@ RUN mkdir -p /app/common/_generated && \
 
 ENV GRPC_HOST=benchmark-runner
 ENV GRPC_PORT=50051
+# Without these the app falls back to port 8005, contradicting EXPOSE 8080
+# and the generated dockerinfo.json that the portal dials.
+ENV PORT=8080
+ENV SELF_URL=http://benchmark-runner:8080
 
 EXPOSE 8080
 EXPOSE 50051

@@ -29,6 +29,7 @@ ENV GRPC_HOST=hai-testing-service
 ENV GRPC_PORT=50051
 ENV HOST=0.0.0.0
 ENV PORT=8080
+ENV SELF_URL=http://hai-testing-service:8080
 
 EXPOSE 8080
 EXPOSE 50051

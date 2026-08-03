@@ -10,8 +10,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY data_synthesizer/proto ./proto
 COPY data_synthesizer/common ./common
 COPY data_synthesizer/main.py ./main.py
-COPY data_synthesizer/blueprint.json ./blueprint.json
-COPY data_synthesizer/dockerinfo.json ./dockerinfo.json
 
 RUN mkdir -p ./common/_generated && \
 	python -m grpc_tools.protoc -I./proto --python_out=./common/_generated --grpc_python_out=./common/_generated ./proto/data_synthesizer.proto
