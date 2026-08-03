@@ -118,18 +118,25 @@ def _build_package_blueprint() -> dict[str, object]:
 
 
 def _build_package_dockerinfo() -> dict[str, object]:
-    """Build dockerinfo matching the local ports used by the passing test."""
+    """Build dockerinfo addressing the services on the shared Docker network.
+
+    Addresses are the docker-compose service names on the ``ai-effect-services``
+    network and ports are the services' container-internal ports, not the
+    published host ports.  The orchestrator workers join the same network, so
+    they resolve these names via Docker DNS.  This matches the convention used
+    by the other use cases (germany-node, portugal-node-*).
+    """
     return {
         "docker_info_list": [
             {
                 "container_name": "grid_synth_service",
-                "ip_address": "host.docker.internal",
-                "port": "8003",
+                "ip_address": "synthetic-data",
+                "port": "8080",
             },
             {
                 "container_name": "benchmark-runner",
-                "ip_address": "host.docker.internal",
-                "port": "8004",
+                "ip_address": "benchmark-runner",
+                "port": "8080",
             },
         ]
     }

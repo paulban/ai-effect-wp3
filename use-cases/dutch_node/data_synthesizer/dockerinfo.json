@@ -2,8 +2,8 @@
   "docker_info_list": [
     {
       "container_name": "grid_synth_service",
-      "ip_address": "host.docker.internal",
-      "port": "8003"
+      "ip_address": "synthetic-data",
+      "port": "8080"
     }
   ]
 }

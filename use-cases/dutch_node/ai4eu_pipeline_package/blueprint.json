@@ -1,7 +1,7 @@
 {
   "name": "Dutch Node Synth-Benchmark Pipeline",
   "pipeline_id": "dutch-node-ai4eu-2svc-001",
-  "creation_date": "2026-06-01",
+  "creation_date": "2026-08-03",
   "type": "pipeline-topology/v2",
   "version": "1.0",
   "nodes": [
