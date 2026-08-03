@@ -3,20 +3,21 @@
 Assembles the canonical directory structure required by the AI4EU Design Studio
 and zips it for upload:
 
-    ai4eu_pipeline_package/
+    export/
         blueprint.json
         dockerinfo.json
         microservice/
             data_synthesizer.proto
             benchmarking.proto
 
-    ai4eu_pipeline_package.zip          ← upload this file
-    
+    dutch-node.zip                      <- upload this file
+
 
 Sources are always read from the live workspace files so the package stays in
 sync with code changes.  The output folder and zip are written to
   use-cases/dutch-node/
-and git-ignored via the .gitignore in that directory (if present).
+and are both committed, matching the export/ + <node>.zip layout used by the
+other use cases (germany-node, portugal-node-*).
 
 Usage (from repo root or from use-cases/dutch-node/):
     python test_pipelines/build_ai4eu_package.py
@@ -50,8 +51,8 @@ _PROTO_SOURCES: dict[str, Path] = {
     ),
 }
 
-_DEFAULT_OUT_DIR = _DUTCH_NODE / "ai4eu_pipeline_package"
-_DEFAULT_ZIP     = _DUTCH_NODE / "ai4eu_pipeline_package.zip"
+_DEFAULT_OUT_DIR = _DUTCH_NODE / "export"
+_DEFAULT_ZIP     = _DUTCH_NODE / "dutch-node.zip"
 
 
 # ── core logic ────────────────────────────────────────────────────────────────
@@ -195,7 +196,7 @@ def build_package(out_dir: Path, zip_path: Path, *, overwrite: bool = True) -> N
     size_kb = zip_path.stat().st_size / 1024
     print(f"\nZip archive:         {zip_path}  ({size_kb:.1f} KB)")
     print("\n✅  AI4EU package ready.\n")
-    print("Upload  ai4eu_pipeline_package.zip  to the AI4EU Design Studio.")
+    print(f"Upload  {zip_path.name}  to the AI4EU Design Studio.")
 
 
 def main() -> None:
