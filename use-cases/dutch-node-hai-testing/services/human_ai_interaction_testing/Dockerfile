@@ -1,37 +1,41 @@
+# Human-AI Interaction Testing control service.
+#
+# The build context is use-cases/, so the shared control-plane package can be
+# copied in alongside this service's own code. The service imports the shared
+# package as `common`, exactly like every other WP3 service, and its own
+# modules as `hai`.
+#
+# No Docker socket, no results bind mount and no gRPC port: sessions run on
+# pre-declared pool slots configured over HTTP, and results are posted back to
+# this service rather than left as files for it to poll for.
 FROM python:3.11-slim
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY human_ai_interaction_testing/requirements.txt /app/requirements.txt
+COPY dutch-node-hai-testing/services/human_ai_interaction_testing/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-COPY human_ai_interaction_testing/proto /app/human_ai_interaction_testing/proto
-COPY human_ai_interaction_testing/common /app/common
-COPY human_ai_interaction_testing/main.py /app/main.py
+# Shared control plane: dispatch, authentication, artifact endpoint.
+COPY common/ /app/common/
 
-RUN mkdir -p /app/common/_generated && \
-    python -m grpc_tools.protoc \
-      -I/app/human_ai_interaction_testing/proto \
-      --python_out=/app/common/_generated \
-      --grpc_python_out=/app/common/_generated \
-      /app/human_ai_interaction_testing/proto/human_ai_interaction_testing.proto
+# This service's own session logic.
+COPY dutch-node-hai-testing/services/human_ai_interaction_testing/hai/ /app/hai/
+COPY dutch-node-hai-testing/services/human_ai_interaction_testing/main.py /app/main.py
 
-# Docker socket is required for container management (see README.md for setup).
-# Mount it at runtime: -v /var/run/docker.sock:/var/run/docker.sock
-# The results directory must also be mounted: -v <HOST_PATH>:/hai-sessions
-
-ENV GRPC_HOST=hai-testing-service
-ENV GRPC_PORT=50051
 ENV HOST=0.0.0.0
 ENV PORT=8080
+# Address the orchestrator's workers reach this service at on the shared network.
 ENV SELF_URL=http://hai-testing-service:8080
+# Where completed session results are written for /control/data to serve.
+ENV HAI_ARTIFACT_DIR=/artifacts
 
 EXPOSE 8080
-EXPOSE 50051
+
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
 
 CMD ["python", "main.py"]

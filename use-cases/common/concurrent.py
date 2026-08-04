@@ -14,9 +14,12 @@ import threading
 from typing import Any, Callable, Optional
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Security
+from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+
+from .artifacts import FileArtifactStore
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -160,11 +163,36 @@ def run_in_background(
     thread.start()
 
 
-def create_app(service_module) -> FastAPI:
+def create_app(
+    service_module,
+    *,
+    extra_routers: list[APIRouter] | None = None,
+    status_provider: Callable[[str], dict | None] | None = None,
+    output_provider: Callable[[str], dict | None] | None = None,
+    artifact_store: FileArtifactStore | None = None,
+) -> FastAPI:
     """Create FastAPI app that dispatches to service methods.
+
+    All extension points are keyword-only with defaults, so existing callers
+    that pass only a service module are unaffected.
 
     Args:
         service_module: Module containing execute_<MethodName> functions.
+        extra_routers: Routers mounted alongside the control plane, letting a
+            service add its own endpoints without forking this module. The
+            Dutch node uses it for the /collect router that receives session
+            results pushed by browser-side tools (FR-29).
+        status_provider: Overrides where task status is read from. Services
+            whose progress lives somewhere other than the in-memory
+            TaskManager — a session store in Redis, for instance — pass their
+            own lookup. Receives a task id, returns a mapping with `status`,
+            `progress` and `error`, or None when the task is unknown.
+        output_provider: Overrides where the output DataReference is read from.
+            Same contract as `status_provider`, returning a DataReference
+            mapping or None.
+        artifact_store: Backs `/control/data/{task_id}`, which serves the bytes
+            a DataReference points at. Without it, that endpoint reports that
+            this service stores no artifacts (FR-25).
 
     Returns:
         FastAPI application.
@@ -174,6 +202,9 @@ def create_app(service_module) -> FastAPI:
         description="Multithreaded service using orchestrator control interface",
         version="1.0.0",
     )
+
+    read_status = status_provider or task_manager.get_status
+    read_output = output_provider or task_manager.get_output
 
     @app.post("/control/execute", response_model=ExecuteResponse, dependencies=[Depends(_check_api_key)])
     def execute(request: ExecuteRequest) -> ExecuteResponse:
@@ -198,7 +229,7 @@ def create_app(service_module) -> FastAPI:
     @app.get("/control/status/{task_id}", response_model=StatusResponse, dependencies=[Depends(_check_api_key)])
     def get_status(task_id: str) -> StatusResponse:
         """Get status of an async task."""
-        status = task_manager.get_status(task_id)
+        status = read_status(task_id)
         if status is None:
             raise HTTPException(status_code=404, detail="Task not found")
         return StatusResponse(**status)
@@ -206,27 +237,57 @@ def create_app(service_module) -> FastAPI:
     @app.get("/control/output/{task_id}", response_model=OutputResponse, dependencies=[Depends(_check_api_key)])
     def get_output(task_id: str) -> OutputResponse:
         """Get output of a completed async task."""
-        output = task_manager.get_output(task_id)
+        output = read_output(task_id)
         if output is None:
-            status = task_manager.get_status(task_id)
+            status = read_status(task_id)
             if status is None:
                 raise HTTPException(status_code=404, detail="Task not found")
             raise HTTPException(status_code=400, detail="Task not complete")
         return OutputResponse(output=DataReference(**output))
+
+    @app.get("/control/data/{task_id}", dependencies=[Depends(_check_api_key)])
+    def get_data(task_id: str) -> Response:
+        """Serve the bytes a DataReference points at.
+
+        This is what makes a standalone service's result retrievable: the
+        DataReference returned by /control/output names this URL, and the party
+        that submitted the workflow fetches it here (FR-05).
+        """
+        if artifact_store is None:
+            raise HTTPException(
+                status_code=404,
+                detail="This service stores no artifacts",
+            )
+
+        try:
+            artifact = artifact_store.load(task_id)
+        except ValueError as invalid_task_id:
+            raise HTTPException(status_code=400, detail=str(invalid_task_id))
+
+        if artifact is None:
+            raise HTTPException(status_code=404, detail="No artifact for this task")
+
+        return Response(content=artifact.content, media_type=artifact.media_type)
 
     @app.get("/health")
     def health() -> dict:
         """Health check."""
         return {"status": "ok"}
 
+    for router in extra_routers or []:
+        app.include_router(router)
+
     return app
 
 
-def run(service_module) -> None:
+def run(service_module, **create_app_options) -> None:
     """Run the service.
 
     Args:
         service_module: Module containing execute_<MethodName> functions.
+        **create_app_options: Forwarded to create_app, so a service can supply
+            extra routers, status/output providers or an artifact store without
+            building the app itself.
     """
     logging.basicConfig(
         level=logging.INFO,
@@ -237,5 +298,5 @@ def run(service_module) -> None:
     port = int(os.environ.get("PORT", "8080"))
 
     logger.info(f"Starting concurrent service on {host}:{port}")
-    app = create_app(service_module)
+    app = create_app(service_module, **create_app_options)
     uvicorn.run(app, host=host, port=port)
