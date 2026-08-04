@@ -3,7 +3,10 @@ services:
     restart: unless-stopped
     image: redis:7-alpine
     ports:
-      - "16379:6379"
+      # Loopback only. This Redis holds workflow state and takes no
+      # authentication; published on all interfaces it is an open datastore on
+      # whatever network the host sits on.
+      - "127.0.0.1:16379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

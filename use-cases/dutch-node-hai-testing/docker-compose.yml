@@ -31,7 +31,10 @@ services:
     networks:
       - services
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      # 127.0.0.1, not localhost: the config is mounted read-only, so nginx's
+      # entrypoint cannot add its IPv6 listener, and localhost resolves to ::1
+      # first — the check would fail against a proxy that is serving fine.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
