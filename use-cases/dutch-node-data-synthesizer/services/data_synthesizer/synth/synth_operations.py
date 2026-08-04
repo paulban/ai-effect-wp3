@@ -519,10 +519,12 @@ def execute_ConfigureGrid(request: ExecuteRequest) -> ExecuteResponse:
             },
         }
 
+        # The configuration is an intermediate step, consumed in this same
+        # process by the synthesis that follows it. It is deliberately not
+        # stored as a task artifact: the artifact a caller receives is the
+        # synthesized grid, and publishing the config under the same task id
+        # would overwrite it.
         config_json = json.dumps(config_output, default=_json_default)
-
-        # Store for HTTP serving
-        get_task_manager().store_data(request.task_id, config_json, "json")
 
         with _cache_lock:
             _cached_config_response = data_synthesizer_pb2.GetGridConfigResponse(
@@ -536,12 +538,17 @@ def execute_ConfigureGrid(request: ExecuteRequest) -> ExecuteResponse:
         grpc_host = os.environ.get("GRPC_HOST", "synthetic-data")
         grpc_port = os.environ.get("GRPC_PORT", "50051")
 
+        # Handed back inline rather than as a reference to this service's own
+        # gRPC endpoint. The two steps run in the same process, so the previous
+        # reference made the handoff a network round trip to itself — and broke
+        # outright once the unused gRPC server was removed. Inline keeps the
+        # config where its only consumer already is.
         return ExecuteResponse(
             status="complete",
             output=DataReference(
-                protocol="grpc",
-                uri=f"{grpc_host}:{grpc_port}",
-                format="GetGridConfig",
+                protocol="inline",
+                uri=base64.b64encode(config_json.encode("utf-8")).decode("ascii"),
+                format="json",
             ),
         )
 
