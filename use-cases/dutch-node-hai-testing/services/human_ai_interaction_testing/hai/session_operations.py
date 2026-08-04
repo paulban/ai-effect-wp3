@@ -38,6 +38,11 @@ logger = logging.getLogger(__name__)
 STATUS_PENDING = "pending"
 STATUS_FAILED = "failed"
 
+# Fields that exist to route and authorise a posted result, not to describe it.
+# They are removed before the result is stored, so a session credential never
+# ends up inside the participant data the artifact endpoint serves (FR-16).
+TRANSPORT_ONLY_FIELDS = frozenset({"session_token", "wp3_session_id", "session_id"})
+
 
 def _decode_inline_input(inputs: list[dict]) -> dict[str, Any]:
     """
@@ -184,11 +189,15 @@ def _handle_collect(body: dict, result_kind: str) -> tuple[dict, int]:
         logger.warning("Rejected %s result: %s", result_kind, rejection_reason)
         return {"error": rejection_reason}, status_code
 
+    result_document = {
+        field: value for field, value in body.items() if field not in TRANSPORT_ONLY_FIELDS
+    }
+
     try:
         if result_kind == "trace":
-            state = service.record_session_trace(session_id, body)
+            state = service.record_session_trace(session_id, result_document)
         else:
-            state = service.record_survey_outcome(session_id, body)
+            state = service.record_survey_outcome(session_id, result_document)
     except KeyError:
         return {"error": f"Session not found: {session_id}"}, 404
 

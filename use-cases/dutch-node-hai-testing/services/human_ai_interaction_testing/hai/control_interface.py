@@ -25,7 +25,7 @@ import logging
 import os
 from typing import Any, Callable
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
 from common.artifacts import FileArtifactStore
@@ -116,7 +116,9 @@ def read_session_status(session_id: str) -> dict[str, Any] | None:
         Mapping with `status`, `progress` and `error`, or None when no such
         session exists — which the shared layer turns into a 404.
     """
-    session_state = get_session_manager().get(session_id)
+    from .session_service import get_session_service
+
+    session_state = get_session_service().get_session(session_id)
     if session_state is None:
         return None
 
@@ -147,11 +149,9 @@ def read_session_output(session_id: str) -> dict[str, Any] | None:
         distinguishes "unknown" from "not complete" by also consulting the
         status provider.
     """
-    session_state = get_session_manager().get(session_id)
-    if session_state is None or session_state.phase != SessionPhase.COMPLETED:
-        return None
+    from .session_service import get_session_service
 
-    return build_artifact_store().build_reference(session_id, SELF_URL)
+    return get_session_service().build_result_reference(session_id, SELF_URL)
 
 
 async def _dispatch_collect(
@@ -225,6 +225,44 @@ def create_collect_router(
     return router
 
 
+def create_internal_router(authorize_session_access) -> APIRouter:
+    """
+    Build the router the proxy calls to authorise participant requests.
+
+    The proxy issues a subrequest here for every request under ``/s/{id}/``.
+    A 200 means the request may proceed, and the ``X-Slot-Upstream`` response
+    header tells the proxy which slot to send it to — which is how session
+    routing stays dynamic while the slots themselves are statically declared,
+    with no Docker socket anywhere (FR-14).
+
+    This router is internal: the proxy never exposes ``/internal/`` to the
+    outside, and nothing else calls it.
+
+    Args:
+        authorize_session_access: Callable taking (session_id, tool, token) and
+            returning the upstream ``host:port`` or None.
+
+    Returns:
+        Router to mount at the /internal prefix.
+    """
+    router = APIRouter(prefix="/internal", tags=["internal"])
+
+    @router.get("/authorize-session")
+    def authorize_session(session_id: str, tool: str, token: str = "") -> Response:
+        """Authorise one participant request and name the slot that serves it."""
+        upstream = authorize_session_access(session_id, tool, token)
+
+        if upstream is None:
+            # A bare 403 with no body: the proxy turns this into the
+            # participant's error page, and telling a caller which of the
+            # several possible reasons applied would help them probe.
+            return Response(status_code=403)
+
+        return Response(status_code=200, headers={"X-Slot-Upstream": upstream})
+
+    return router
+
+
 def _shared_app_options(
     execute_handlers: dict[str, Callable[[ExecuteRequest], ExecuteResponse]],
     collect_session_trace: Callable[[dict], tuple[dict, int]],
@@ -245,9 +283,18 @@ def _shared_app_options(
     Returns:
         The handler module shim and the keyword options for create_app/run.
     """
+    from .session_service import get_session_service
+
     handler_module = _HandlerModule(execute_handlers)
     options: dict[str, Any] = {
-        "extra_routers": [create_collect_router(collect_session_trace, collect_survey_outcome)],
+        "extra_routers": [
+            create_collect_router(collect_session_trace, collect_survey_outcome),
+            create_internal_router(
+                lambda session_id, tool, token: get_session_service().authorize_session_access(
+                    session_id, tool, token
+                )
+            ),
+        ],
         "status_provider": read_session_status,
         "output_provider": read_session_output,
         "artifact_store": build_artifact_store(),

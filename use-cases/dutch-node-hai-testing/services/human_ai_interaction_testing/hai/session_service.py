@@ -458,6 +458,90 @@ class SessionService:
 
     # -- authorisation -----------------------------------------------------
 
+    def get_session(self, session_id: str) -> SessionState | None:
+        """
+        Look up a session's state.
+
+        The control plane reads through this rather than reaching for the
+        session store directly, so there is one path to session state and one
+        object that owns it.
+
+        Args:
+            session_id: Session to look up.
+
+        Returns:
+            The session state, or None when unknown.
+        """
+        return self._sessions.get(session_id)
+
+    def build_result_reference(self, session_id: str, self_url: str) -> dict[str, Any] | None:
+        """
+        Build the fetchable reference to a completed session's results.
+
+        Args:
+            session_id: Session to reference.
+            self_url: Base URL the fetching party reaches this service at.
+
+        Returns:
+            A DataReference mapping, or None when the session has not completed
+            or stored no artifact.
+        """
+        state = self._sessions.get(session_id)
+        if state is None or state.phase != SessionPhase.COMPLETED:
+            return None
+
+        return self._artifacts.build_reference(session_id, self_url)
+
+    def authorize_session_access(
+        self,
+        session_id: str,
+        tool: str,
+        presented_token: str | None,
+    ) -> str | None:
+        """
+        Decide whether a request may reach a session's tool, and which slot serves it.
+
+        Called by the proxy for every participant request, before anything
+        reaches a session container. Returning the upstream address here is
+        what lets the proxy route by *session* while the slots themselves stay
+        statically declared — so the proxy needs no access to the Docker
+        daemon to discover them (FR-14, FR-15).
+
+        Args:
+            session_id: Session named in the request path.
+            tool: Which tool is being addressed — "gui" or "survey".
+            presented_token: Token from the query string or session cookie.
+
+        Returns:
+            The upstream ``host:port`` to proxy to, or None when the request is
+            not authorised — an unknown or finished session, an unknown tool,
+            or a missing, forged or expired token.
+        """
+        if tool not in ("gui", "survey"):
+            return None
+
+        state = self._sessions.get(session_id)
+        if state is None or state.is_terminal():
+            return None
+
+        verification = verify_token(session_id, presented_token or "")
+        if not verification.is_valid:
+            logger.warning(
+                "Denied %s access to session %s: token %s",
+                tool,
+                session_id,
+                verification.reason,
+            )
+            return None
+
+        slot = self._slots.slot_for_session(session_id)
+        if slot is None:
+            logger.warning("Session %s holds no slot; denying access", session_id)
+            return None
+
+        upstream_url = slot.simulator_url if tool == "gui" else slot.survey_url
+        return upstream_url.removeprefix("http://").removeprefix("https://")
+
     def resolve_result_session(
         self,
         declared_session_id: str | None,

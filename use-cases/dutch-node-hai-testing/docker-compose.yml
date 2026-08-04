@@ -1,0 +1,162 @@
+# Dutch node — Human-AI Interaction Testing.
+#
+# Build from this directory: `docker compose up -d --build`. Build contexts are
+# ../ (use-cases/) so the shared control-plane package can be copied into the
+# service image alongside its own code.
+#
+# The InteractiveAI CAB platform is NOT started here. It is a long-lived,
+# separately deployed stack; this file attaches to the same external network and
+# reaches it by name. Start it first.
+#
+# Exactly one host port is published, by the proxy. Everything else — the
+# control service, Redis, and every session slot — is reachable only on the
+# internal network (FR-19).
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Single entry point. The only container with a published port.
+  # ---------------------------------------------------------------------------
+  session-proxy:
+    image: nginx:1.27-alpine
+    container_name: hai-session-proxy
+    restart: unless-stopped
+    ports:
+      - "${HAI_PROXY_HOST_PORT:-8443}:80"
+    volumes:
+      - ./proxy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      hai-testing-service:
+        condition: service_healthy
+    networks:
+      - services
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Session state and slot reservations.
+  #
+  # Deliberately separate from the orchestrator's Redis: the node's session
+  # state should survive an orchestrator restart and vice versa, and sharing one
+  # instance would couple their lifecycles for no benefit.
+  # ---------------------------------------------------------------------------
+  hai-redis:
+    image: redis:7-alpine
+    container_name: hai-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - hai_redis_data:/data
+    networks:
+      - services
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Control service. Named hai-testing-service because the exported
+  # dockerinfo.json addresses it by that name; renaming it would invalidate the
+  # package already uploaded to the portal (FR-37).
+  # ---------------------------------------------------------------------------
+  hai-testing-service:
+    build:
+      context: ..
+      dockerfile: dutch-node-hai-testing/services/human_ai_interaction_testing/Dockerfile
+    image: ghcr.io/ai-effect/dutch-node-hai-testing:latest
+    container_name: hai-testing-service
+    restart: unless-stopped
+    environment:
+      # Bearer token required on /control/*. Unset means open, which is only
+      # acceptable on a developer machine.
+      - SERVICE_API_KEY=${SERVICE_API_KEY:-}
+      # Signs participant session links. Required; generate with
+      # `openssl rand -hex 32`.
+      - HAI_SESSION_TOKEN_SECRET=${HAI_SESSION_TOKEN_SECRET:?set HAI_SESSION_TOKEN_SECRET}
+      # Public base URL as a participant's browser sees it. Must be the proxy's
+      # address — an internal Docker name here is what made the old
+      # host.docker.internal URLs unreachable.
+      - HAI_PUBLIC_BASE_URL=${HAI_PUBLIC_BASE_URL:?set HAI_PUBLIC_BASE_URL}
+      - HAI_INTERNAL_BASE_URL=http://hai-testing-service:8080
+      - HAI_REDIS_URL=redis://hai-redis:6379/0
+      - HAI_SESSION_SLOT_COUNT=${HAI_SESSION_SLOT_COUNT:-2}
+      - HAI_ARTIFACT_DIR=/artifacts
+      - SELF_URL=http://hai-testing-service:8080
+    volumes:
+      - hai_artifacts:/artifacts
+    depends_on:
+      hai-redis:
+        condition: service_healthy
+    networks:
+      - services
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Session slots.
+  #
+  # Two pairs, matching HAI_SESSION_SLOT_COUNT. Each pair serves one participant
+  # at a time; the control service reserves a free pair and configures it over
+  # HTTP. Adding a third participant means adding a third pair here and raising
+  # the slot count — no firewall change, because none of these publish a port.
+  #
+  # The service names must match HAI_SLOT_*_URL_TEMPLATE in the control service:
+  #   hai-slot-<n>-simulator:5000 and hai-slot-<n>-survey:80
+  # ---------------------------------------------------------------------------
+  hai-slot-1-simulator:
+    image: ${HAI_SIMULATOR_IMAGE:-powergrid-simulator-app:latest}
+    container_name: hai-slot-1-simulator
+    restart: unless-stopped
+    environment: &simulator_environment
+      # Read by config/env_overrides.py on the WP3 branch of InteractiveAI.
+      # Without these the simulator falls back to the scenario baked into
+      # CONFIG.toml and to CAB addresses on a 192.168.x range.
+      - HAI_CAB_URL=${HAI_CAB_URL:-http://frontend:80}
+      - HAI_SIM_ENV_NAME=${HAI_SIM_ENV_NAME:-Ressources/env_ICAPS_input_data_test}
+    networks:
+      - services
+
+  hai-slot-1-survey:
+    build:
+      context: ./services/human_ai_interaction_testing
+      dockerfile: hai-survey-wrapper/Dockerfile
+    image: ${HAI_SURVEY_IMAGE:-hai-survey-wrapper:latest}
+    container_name: hai-slot-1-survey
+    restart: unless-stopped
+    networks:
+      - services
+
+  hai-slot-2-simulator:
+    image: ${HAI_SIMULATOR_IMAGE:-powergrid-simulator-app:latest}
+    container_name: hai-slot-2-simulator
+    restart: unless-stopped
+    environment: *simulator_environment
+    networks:
+      - services
+
+  hai-slot-2-survey:
+    image: ${HAI_SURVEY_IMAGE:-hai-survey-wrapper:latest}
+    container_name: hai-slot-2-survey
+    restart: unless-stopped
+    depends_on:
+      - hai-slot-1-survey
+    networks:
+      - services
+
+volumes:
+  # Session results, served by /control/data/{task_id}. A named volume rather
+  # than /tmp, which was subject to tmp cleanup and lost on reboot (FR-23).
+  hai_artifacts:
+  hai_redis_data:
+
+networks:
+  services:
+    name: ai-effect-services
+    external: true
