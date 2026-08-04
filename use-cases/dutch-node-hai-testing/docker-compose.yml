@@ -85,7 +85,10 @@ services:
       - HAI_REDIS_URL=redis://hai-redis:6379/0
       - HAI_SESSION_SLOT_COUNT=${HAI_SESSION_SLOT_COUNT:-2}
       - HAI_ARTIFACT_DIR=/artifacts
-      - SELF_URL=http://hai-testing-service:8080
+      # Public, because the DataReference built from it is fetched by the
+      # AI vendor from outside. An internal Docker name here reproduces the
+      # unresolvable-reference defect this redesign removed.
+      - SELF_URL=${HAI_PUBLIC_BASE_URL}/svc/hai
     volumes:
       - hai_artifacts:/artifacts
     depends_on:

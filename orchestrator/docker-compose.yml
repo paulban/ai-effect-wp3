@@ -11,12 +11,16 @@ services:
       retries: 3
 
   api:
+    container_name: orchestrator-api
     restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "18000:8000"
+      # Bound to the loopback interface: vendors reach this through the node's
+      # proxy on 443, and operators through an SSH tunnel. Publishing it on all
+      # interfaces would put an unauthenticated-by-default API on the network.
+      - "127.0.0.1:18000:8000"
     environment:
       - REDIS_URL=redis://redis:6379
       - HOST=0.0.0.0
@@ -25,6 +29,11 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    # Joined to the shared network so the node's session proxy can route
+    # vendor workflow submissions to it. Still not published to the host.
+    networks:
+      - default
+      - services
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

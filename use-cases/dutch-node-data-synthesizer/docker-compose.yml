@@ -20,7 +20,8 @@ services:
       # Bearer token on /control/*. Unset means open, which is acceptable only
       # on a developer machine.
       - SERVICE_API_KEY=${SERVICE_API_KEY:-}
-      - SELF_URL=http://synthetic-data:8080
+      # Public: the vendor fetches the synthesized grid from outside.
+      - SELF_URL=${NODE_PUBLIC_BASE_URL:?set NODE_PUBLIC_BASE_URL}/svc/synth
       - ARTIFACT_DIR=/artifacts
       - MAX_CONCURRENT_JOBS=${SYNTHESIZER_MAX_CONCURRENT_JOBS:-1}
     volumes:

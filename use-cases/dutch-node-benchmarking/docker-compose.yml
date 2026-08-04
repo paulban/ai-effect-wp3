@@ -20,7 +20,8 @@ services:
       # Bearer token on /control/*. Unset means open, which is acceptable only
       # on a developer machine.
       - SERVICE_API_KEY=${SERVICE_API_KEY:-}
-      - SELF_URL=http://benchmark-runner:8080
+      # Public: the vendor fetches the benchmark result from outside.
+      - SELF_URL=${NODE_PUBLIC_BASE_URL:?set NODE_PUBLIC_BASE_URL}/svc/benchmark
       - ARTIFACT_DIR=/artifacts
       - MAX_CONCURRENT_JOBS=${BENCHMARK_MAX_CONCURRENT_JOBS:-1}
     volumes:
