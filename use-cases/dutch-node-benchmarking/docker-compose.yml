@@ -1,0 +1,51 @@
+# Dutch node — Grid2Op benchmarking.
+#
+# Build from this directory: `docker compose up -d --build`. The build context
+# is ../ (use-cases/) so the shared control-plane package can be copied into the
+# image alongside the service's own code.
+#
+# The service publishes no host port. It is reached only by the orchestrator's
+# workers on the shared network, at the address the exported dockerinfo.json
+# names — benchmark-runner:8080.
+
+services:
+  benchmark-runner:
+    build:
+      context: ..
+      dockerfile: dutch-node-benchmarking/services/benchmarking/Dockerfile
+    image: ghcr.io/ai-effect/dutch-node-benchmarking:latest
+    container_name: benchmark-runner
+    restart: unless-stopped
+    environment:
+      # Bearer token on /control/*. Unset means open, which is acceptable only
+      # on a developer machine.
+      - SERVICE_API_KEY=${SERVICE_API_KEY:-}
+      - SELF_URL=http://benchmark-runner:8080
+      - ARTIFACT_DIR=/artifacts
+      - MAX_CONCURRENT_JOBS=${BENCHMARK_MAX_CONCURRENT_JOBS:-1}
+    volumes:
+      # Results outlive the container so a restart mid-study does not lose a
+      # completed benchmark.
+      - benchmark_artifacts:/artifacts
+    networks:
+      - services
+    deploy:
+      resources:
+        limits:
+          # A grid2op run will take every core it is offered. Capping it keeps
+          # the live human-AI sessions on the same host responsive (FR-26).
+          cpus: "${BENCHMARK_CPU_LIMIT:-2.0}"
+          memory: ${BENCHMARK_MEMORY_LIMIT:-4G}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  benchmark_artifacts:
+
+networks:
+  services:
+    name: ai-effect-services
+    external: true

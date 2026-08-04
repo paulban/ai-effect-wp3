@@ -1,21 +1,16 @@
-"""Synthetic Power Grid Service - AI-Effect Orchestrator Adapter.
+"""Synthetic power grid service entrypoint.
 
-This service wraps the Chung-Lu-Chain power grid synthesizer package
-and exposes it via the AI-Effect control interface.
-
-Pipeline:
-    grid_configurator (ConfigureGrid) -> grid_synthesizer (SynthesizeGrid)
-
-Endpoints:
-    POST /control/execute     - Start an operation (ConfigureGrid or SynthesizeGrid)
-    GET  /control/status/{id} - Check task status
-    GET  /control/output/{id} - Retrieve task output (DataReference)
-    GET  /control/data/{id}   - Serve raw data (JSON)
-    GET  /health              - Health check
+Grid synthesis is minutes of work, so the service accepts a job and returns a
+task id rather than holding the request open. There is no gRPC server: the
+synthesized grid is served as an artifact over HTTP.
 """
 
-from common import run, start_grpc_server, synth_handlers
+from common.batch_jobs import build_runner
+from common.concurrent import run
+
+from synth import synth_operations
 
 if __name__ == "__main__":
-    grpc_server = start_grpc_server()
-    run(synth_handlers, "Synthetic Power Grid")
+    job_runner = build_runner()
+    synth_operations.set_job_runner(job_runner)
+    run(synth_operations, artifact_store=job_runner.artifact_store)

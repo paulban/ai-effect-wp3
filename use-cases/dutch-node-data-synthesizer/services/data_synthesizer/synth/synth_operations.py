@@ -48,16 +48,44 @@ from powergrid_synth.transmission.load_allocator import LoadAllocator
 from powergrid_synth.transmission.generation_dispatcher import GenerationDispatcher
 from powergrid_synth.transmission.transmission import TransmissionLineAllocator
 
-from .control_interface import (
-    DataReference,
-    ExecuteRequest,
-    ExecuteResponse,
-    get_data_url,
-)
+from common.batch_jobs import BatchJobRunner, build_runner
+from common.concurrent import DataReference, ExecuteRequest, ExecuteResponse
+
 from .proto_runtime import ensure_generated
-from .task_manager import get_task_manager
 
 logger = logging.getLogger(__name__)
+
+# Logical format recorded on the stored artifact and carried in the
+# DataReference handed back to the caller.
+GRID_DATA_FORMAT = "GridData"
+
+# Built on first use so importing this module reads no environment.
+_job_runner: BatchJobRunner | None = None
+
+
+def set_job_runner(runner: BatchJobRunner | None) -> None:
+    """
+    Install a job runner for this process.
+
+    Args:
+        runner: Runner to use, or None to clear it so the next call builds a
+            fresh one. Tests inject a runner writing to a temporary directory.
+    """
+    global _job_runner
+    _job_runner = runner
+
+
+def get_job_runner() -> BatchJobRunner:
+    """
+    Return the process-wide job runner, building it on first use.
+
+    Returns:
+        The shared BatchJobRunner.
+    """
+    global _job_runner
+    if _job_runner is None:
+        _job_runner = build_runner()
+    return _job_runner
 
 ensure_generated("data_synthesizer.proto")
 import data_synthesizer_pb2  # type: ignore  # noqa: E402
@@ -101,119 +129,6 @@ def _grid2op_env_name(_: int) -> str:
     """Return the fixed synthesized Grid2Op environment name."""
     return DEFAULT_GRID2OP_ENV_NAME
 
-
-class DataSynthesizerServicer(data_synthesizer_pb2_grpc.DataSynthesizerServiceServicer):
-    """gRPC servicer exposing synthesized config and grid artifacts."""
-
-    def ConfigureAndSynthesize(self, request, context):
-        params: dict[str, Any] = {}
-
-        if request.level_specs:
-            params["level_specs"] = [
-                {
-                    "n": int(spec.n),
-                    "avg_k": float(spec.avg_k),
-                    "diam": int(spec.diam),
-                    "dist_type": str(spec.dist_type),
-                    "max_k": int(spec.max_k),
-                }
-                for spec in request.level_specs
-            ]
-
-        if request.connections:
-            params["connection_specs"] = {
-                str((int(conn.from_level), int(conn.to_level))): {
-                    "type": str(conn.type),
-                    "c": float(conn.c),
-                    "gamma": float(conn.gamma),
-                }
-                for conn in request.connections
-            }
-
-        if int(request.seed) > 0:
-            params["seed"] = int(request.seed)
-
-        if request.loading_level != data_synthesizer_pb2.LOADING_LEVEL_UNSPECIFIED:
-            params["loading_level"] = _loading_level_from_proto(request.loading_level)
-
-        if int(request.ref_sys_id) > 0:
-            params["ref_sys_id"] = int(request.ref_sys_id)
-
-        inline_payload = base64.b64encode(
-            json.dumps(params).encode("utf-8")
-        ).decode("utf-8")
-        execute_request = ExecuteRequest(
-            method="ConfigureAndSynthesize",
-            workflow_id="grpc",
-            task_id=f"grpc-{uuid.uuid4().hex}",
-            inputs=[
-                {
-                    "protocol": "inline",
-                    "uri": inline_payload,
-                    "format": "json",
-                }
-            ],
-        )
-
-        execute_response = execute_ConfigureAndSynthesize(execute_request)
-        if execute_response.status != "complete":
-            context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details(
-                execute_response.error or "ConfigureAndSynthesize failed"
-            )
-            return data_synthesizer_pb2.GetGridDataResponse(
-                success=False,
-                message=execute_response.error
-                or "ConfigureAndSynthesize failed",
-            )
-
-        with _cache_lock:
-            if _cached_grid_response is None:
-                context.set_code(grpc.StatusCode.NOT_FOUND)
-                context.set_details("No synthesized grid available")
-                return data_synthesizer_pb2.GetGridDataResponse(
-                    success=False,
-                    message="No synthesized grid available",
-                )
-            return _cached_grid_response
-
-    def GetGridConfig(self, request, context):
-        with _cache_lock:
-            if _cached_config_response is None:
-                context.set_code(grpc.StatusCode.NOT_FOUND)
-                context.set_details("No grid configuration available")
-                return data_synthesizer_pb2.GetGridConfigResponse(
-                    success=False,
-                    message="No grid configuration available",
-                )
-            return _cached_config_response
-
-    def GetGridData(self, request, context):
-        with _cache_lock:
-            if _cached_grid_response is None:
-                context.set_code(grpc.StatusCode.NOT_FOUND)
-                context.set_details("No synthesized grid available")
-                return data_synthesizer_pb2.GetGridDataResponse(
-                    success=False,
-                    message="No synthesized grid available",
-                )
-            return _cached_grid_response
-
-    def GetSynthesizedGrid(self, request, context):
-        return self.GetGridData(request, context)
-
-
-def start_grpc_server():
-    """Start the synthesizer gRPC data plane server in background."""
-    grpc_port = os.environ.get("GRPC_PORT", "50051")
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    data_synthesizer_pb2_grpc.add_DataSynthesizerServiceServicer_to_server(
-        DataSynthesizerServicer(), server
-    )
-    server.add_insecure_port(f"[::]:{grpc_port}")
-    server.start()
-    logger.info(f"Data synthesizer gRPC server started on port {grpc_port}")
-    return server
 
 
 def _decode_inline_input(input_ref: dict) -> dict:
@@ -640,7 +555,7 @@ def execute_ConfigureGrid(request: ExecuteRequest) -> ExecuteResponse:
 # =============================================================================
 
 
-def execute_SynthesizeGrid(request: ExecuteRequest) -> ExecuteResponse:
+def _synthesize_grid(request: ExecuteRequest) -> dict:
     """Generate a synthetic power grid using configuration from ConfigureGrid.
 
     Input:
@@ -662,7 +577,7 @@ def execute_SynthesizeGrid(request: ExecuteRequest) -> ExecuteResponse:
     global _cached_grid_response
 
     if not request.inputs:
-        return ExecuteResponse(status="failed", error="No input configuration provided")
+        raise ValueError("No input configuration provided")
 
     input_ref = request.inputs[0]
 
@@ -672,16 +587,10 @@ def execute_SynthesizeGrid(request: ExecuteRequest) -> ExecuteResponse:
         if protocol == "grpc":
             upstream_uri = input_ref.get("uri", "")
             if not upstream_uri:
-                return ExecuteResponse(
-                    status="failed",
-                    error="Missing grpc uri for SynthesizeGrid input",
-                )
+                raise ValueError("Missing grpc uri for SynthesizeGrid input")
             config_response = _fetch_grid_config_from_upstream(upstream_uri)
             if not config_response.success:
-                return ExecuteResponse(
-                    status="failed",
-                    error=f"Upstream gRPC config fetch failed: {config_response.message}",
-                )
+                raise ValueError(f"Upstream gRPC config fetch failed: {config_response.message}")
             config = _proto_grid_config_to_dict(config_response.config)
         elif protocol in ("http", "https"):
             config_json = fetch_http_data(input_ref["uri"])
@@ -689,12 +598,9 @@ def execute_SynthesizeGrid(request: ExecuteRequest) -> ExecuteResponse:
         elif protocol == "inline":
             config = _decode_inline_input(input_ref)
         else:
-            return ExecuteResponse(
-                status="failed",
-                error=(
+            raise ValueError((
                     f"Unsupported protocol: {protocol}. "
-                    "Expected 'grpc', 'http', 'https', or 'inline'."
-                ),
+                    "Expected 'grpc', 'http', 'https', or 'inline'."),
             )
 
         seed = config.get("seed", DEFAULT_SEED)
@@ -755,62 +661,58 @@ def execute_SynthesizeGrid(request: ExecuteRequest) -> ExecuteResponse:
             "graph_data": graph_data,
         }
 
-        output_json = json.dumps(output, default=_json_default)
-
-        # Store node-link JSON for HTTP serving (test_pipeline, file-based tests)
-        get_task_manager().store_data(request.task_id, output_json, "json")
-
-        # Convert to pandapower and store JSON in the gRPC proto.
-        # This is the authoritative format for inter-service data exchange.
+        # pandapower is the interchange format a consumer of this grid actually
+        # wants, so it travels in the stored artifact rather than only inside a
+        # protobuf message that nothing resolves.
         logger.info("Converting synthesized grid to pandapower network...")
-        pp_json = _grid_to_pandapower_json(graph_data)
-
-        with _cache_lock:
-            _cached_grid_response = data_synthesizer_pb2.GetGridDataResponse(
-                success=True,
-                message="Synthesized grid available",
-                grid_data=_grid_data_to_proto(output, config, pp_json),
-            )
+        output["pandapower"] = json.loads(_grid_to_pandapower_json(graph_data))
 
         logger.info(
             f"Grid synthesis complete: {grid.number_of_nodes()} nodes, "
             f"{grid.number_of_edges()} edges"
         )
-
-        grpc_host = os.environ.get("GRPC_HOST", "synthetic-data")
-        grpc_port = os.environ.get("GRPC_PORT", "50051")
-
-        return ExecuteResponse(
-            status="complete",
-            output=DataReference(
-                protocol="grpc",
-                uri=f"{grpc_host}:{grpc_port}",
-                format="GetGridData",
-            ),
-        )
+        return output
 
     except Exception as e:
-        logger.error(f"SynthesizeGrid failed: {e}")
-        return ExecuteResponse(status="failed", error=str(e))
+        logger.exception("Grid synthesis failed")
+        raise
 
 
 def execute_ConfigureAndSynthesize(request: ExecuteRequest) -> ExecuteResponse:
-    """Run ConfigureGrid and SynthesizeGrid in one control-plane operation.
+    """Start a grid synthesis and return immediately with its task id.
 
-    This operation is intended for workflow designers that cannot reliably model
-    two logical nodes backed by the same physical synthesizer service endpoint.
-    It preserves existing behavior by running ConfigureGrid first and then
-    invoking SynthesizeGrid with the generated gRPC data reference.
+    This is the operation the exported package declares, because the two
+    logical steps are backed by one physical service and a workflow designer
+    cannot reliably model them as separate nodes.
+
+    Synthesis is minutes of work, so it runs on a background thread rather than
+    holding the orchestrator's request open (FR-24). Callers poll
+    ``/control/status/{task_id}`` and read ``/control/output/{task_id}``, which
+    returns an HTTP URL to the stored grid — fetchable by whoever submitted the
+    workflow, unlike the gRPC reference this operation used to return (FR-25).
+
+    Args:
+        request: Orchestrator execute request carrying the synthesis parameters.
+
+    Returns:
+        An ExecuteResponse with status ``running``, or ``failed`` when the
+        configuration is rejected or the service is already at capacity.
     """
+    # Configuration is cheap and its failures are the caller's mistakes, so it
+    # runs synchronously: a bad request is rejected now rather than becoming a
+    # background task that fails a minute later.
     configure_response = execute_ConfigureGrid(request)
     if configure_response.status != "complete" or configure_response.output is None:
         return ExecuteResponse(
             status="failed",
-            error=configure_response.error
-            or "ConfigureGrid failed during ConfigureAndSynthesize",
+            task_id=request.task_id,
+            error=(
+                configure_response.error
+                or "ConfigureGrid failed during ConfigureAndSynthesize"
+            ),
         )
 
-    synth_request = ExecuteRequest(
+    synthesis_request = ExecuteRequest(
         method="SynthesizeGrid",
         workflow_id=request.workflow_id,
         task_id=request.task_id,
@@ -822,7 +724,15 @@ def execute_ConfigureAndSynthesize(request: ExecuteRequest) -> ExecuteResponse:
             }
         ],
     )
-    return execute_SynthesizeGrid(synth_request)
+
+    def synthesize_grid(report_progress) -> dict:
+        """Generate the grid, reporting coarse progress as it goes."""
+        report_progress(20)
+        synthesized_grid = _synthesize_grid(synthesis_request)
+        report_progress(90)
+        return synthesized_grid
+
+    return get_job_runner().submit(request, synthesize_grid, data_format=GRID_DATA_FORMAT)
 
 
 def _json_default(obj):
@@ -842,8 +752,8 @@ def _json_default(obj):
 # Handler exports
 # =============================================================================
 
+# Only ConfigureAndSynthesize is exported to the portal: the two steps are
+# backed by one service, and the export's operations allowlist names this one.
 synth_handlers = {
-    "ConfigureGrid": execute_ConfigureGrid,
-    "SynthesizeGrid": execute_SynthesizeGrid,
     "ConfigureAndSynthesize": execute_ConfigureAndSynthesize,
 }

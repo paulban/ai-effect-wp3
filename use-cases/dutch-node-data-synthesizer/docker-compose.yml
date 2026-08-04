@@ -1,0 +1,51 @@
+# Dutch node — synthetic grid generation.
+#
+# Build from this directory: `docker compose up -d --build`. The build context
+# is ../ (use-cases/) so the shared control-plane package can be copied into the
+# image alongside the service's own code.
+#
+# The service publishes no host port. It is reached only by the orchestrator's
+# workers on the shared network, at the address the exported dockerinfo.json
+# names — synthetic-data:8080.
+
+services:
+  synthetic-data:
+    build:
+      context: ..
+      dockerfile: dutch-node-data-synthesizer/services/data_synthesizer/Dockerfile
+    image: ghcr.io/ai-effect/dutch-node-data-synthesizer:latest
+    container_name: synthetic-data
+    restart: unless-stopped
+    environment:
+      # Bearer token on /control/*. Unset means open, which is acceptable only
+      # on a developer machine.
+      - SERVICE_API_KEY=${SERVICE_API_KEY:-}
+      - SELF_URL=http://synthetic-data:8080
+      - ARTIFACT_DIR=/artifacts
+      - MAX_CONCURRENT_JOBS=${SYNTHESIZER_MAX_CONCURRENT_JOBS:-1}
+    volumes:
+      # Results outlive the container so a restart mid-study does not lose a
+      # completed benchmark.
+      - synthesizer_artifacts:/artifacts
+    networks:
+      - services
+    deploy:
+      resources:
+        limits:
+          # Grid generation is CPU-bound. Capping it keeps the live human-AI
+          # sessions sharing the host responsive (FR-26).
+          cpus: "${SYNTHESIZER_CPU_LIMIT:-2.0}"
+          memory: ${SYNTHESIZER_MEMORY_LIMIT:-4G}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  synthesizer_artifacts:
+
+networks:
+  services:
+    name: ai-effect-services
+    external: true

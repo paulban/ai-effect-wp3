@@ -15,31 +15,50 @@ import json
 import logging
 import os
 import tempfile
-import threading
-import uuid
-from concurrent import futures
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 from urllib.parse import urlparse
 
-import grpc
-
-from .control_interface import (
-    DataReference,
-    ExecuteRequest,
-    ExecuteResponse,
-    get_data_url,
-)
-from .proto_runtime import ensure_generated
-from .task_manager import get_task_manager
+from common.batch_jobs import BatchJobRunner, build_runner
+from common.concurrent import ExecuteRequest, ExecuteResponse
 
 logger = logging.getLogger(__name__)
 
-ensure_generated("benchmarking.proto")
-import benchmarking_pb2  # type: ignore  # noqa: E402
-import benchmarking_pb2_grpc  # type: ignore  # noqa: E402
+# Logical format recorded on the stored artifact and carried in the
+# DataReference handed back to the caller.
+BENCHMARK_RESULT_FORMAT = "BenchmarkResult"
+
+# Built on first use so importing this module opens no filesystem handles and
+# reads no environment, which keeps it importable in tests.
+_job_runner: BatchJobRunner | None = None
+
+
+def set_job_runner(runner: BatchJobRunner | None) -> None:
+    """
+    Install a job runner for this process.
+
+    Args:
+        runner: Runner to use, or None to clear it so the next call builds a
+            fresh one. Tests inject a runner writing to a temporary directory.
+    """
+    global _job_runner
+    _job_runner = runner
+
+
+def get_job_runner() -> BatchJobRunner:
+    """
+    Return the process-wide job runner, building it on first use.
+
+    Returns:
+        The shared BatchJobRunner.
+    """
+    global _job_runner
+    if _job_runner is None:
+        _job_runner = build_runner()
+    return _job_runner
+
 
 # Preset benchmark scenario. The benchmark runs a fixed, published grid2op
 # environment; it does not take its scenario from the data synthesizer.
@@ -47,136 +66,6 @@ DEFAULT_ENV_NAME = "l2rpn_case14_sandbox"
 DEFAULT_MAX_STEPS = 200
 
 REQUIRED_ALGORITHM_FUNCTION = "build_agent"
-
-_cache_lock = threading.Lock()
-_cached_result_response: benchmarking_pb2.GetBenchmarkResultResponse | None = None
-
-
-class BenchmarkingServicer(benchmarking_pb2_grpc.BenchmarkingServiceServicer):
-    """gRPC servicer exposing cached benchmark results."""
-
-    def RunBenchmark(self, request, context):
-        benchmark_payload: dict[str, Any] = {
-            "max_steps": int(request.config.max_steps or DEFAULT_MAX_STEPS),
-            "scenarios": [
-                    {
-                        "env_name": str(scenario.env_name),
-                        "time_series_ids": [
-                            int(time_series_id)
-                            for time_series_id in scenario.time_series_ids
-                        ],
-                        "backend": str(scenario.backend)
-                        if str(scenario.backend)
-                        else None,
-                        "topology": {
-                            "format": str(scenario.topology.format),
-                            "path": str(scenario.topology.path),
-                        }
-                        if str(scenario.topology.format)
-                        and str(scenario.topology.path)
-                        else None,
-                        "time_series": {
-                            "format": str(scenario.time_series.format),
-                            "path": str(scenario.time_series.path),
-                        }
-                        if str(scenario.time_series.format)
-                        and str(scenario.time_series.path)
-                        else None,
-                    }
-                    for scenario in request.config.scenarios
-                ],
-        }
-
-        if request.config.kpis:
-            benchmark_payload["kpis"] = [str(kpi) for kpi in request.config.kpis]
-
-        payload: dict[str, Any] = {
-            "benchmark": benchmark_payload,
-            "algorithm": {},
-        }
-
-        payload["benchmark"]["scenarios"] = [
-            {
-                key: value
-                for key, value in scenario.items()
-                if value is not None
-            }
-            for scenario in payload["benchmark"]["scenarios"]
-        ]
-
-        if request.algorithm.source_bytes:
-            payload["algorithm"]["source_b64"] = base64.b64encode(
-                bytes(request.algorithm.source_bytes)
-            ).decode("utf-8")
-        elif str(request.algorithm.source_uri):
-            payload["algorithm"]["source_uri"] = str(request.algorithm.source_uri)
-
-        if not payload["benchmark"]["scenarios"]:
-            payload["benchmark"]["scenarios"] = [
-                {
-                    "env_name": DEFAULT_ENV_NAME,
-                    "time_series_ids": [0],
-                }
-            ]
-
-        inline_payload = base64.b64encode(
-            json.dumps(payload).encode("utf-8")
-        ).decode("utf-8")
-        execute_request = ExecuteRequest(
-            method="RunBenchmark",
-            workflow_id="grpc",
-            task_id=f"grpc-{uuid.uuid4().hex}",
-            inputs=[
-                {
-                    "protocol": "inline",
-                    "uri": inline_payload,
-                    "format": "json",
-                }
-            ],
-        )
-
-        execute_response = execute_RunBenchmark(execute_request)
-        if execute_response.status != "complete":
-            context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details(execute_response.error or "RunBenchmark failed")
-            return benchmarking_pb2.GetBenchmarkResultResponse(
-                success=False,
-                message=execute_response.error or "RunBenchmark failed",
-            )
-
-        with _cache_lock:
-            if _cached_result_response is None:
-                context.set_code(grpc.StatusCode.NOT_FOUND)
-                context.set_details("No benchmark result available")
-                return benchmarking_pb2.GetBenchmarkResultResponse(
-                    success=False,
-                    message="No benchmark result available",
-                )
-            return _cached_result_response
-
-    def GetBenchmarkResult(self, request, context):
-        with _cache_lock:
-            if _cached_result_response is None:
-                context.set_code(grpc.StatusCode.NOT_FOUND)
-                context.set_details("No benchmark result available")
-                return benchmarking_pb2.GetBenchmarkResultResponse(
-                    success=False,
-                    message="No benchmark result available",
-                )
-            return _cached_result_response
-
-
-def start_grpc_server():
-    """Start the benchmark gRPC data plane server in background."""
-    grpc_port = os.environ.get("GRPC_PORT", "50051")
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    benchmarking_pb2_grpc.add_BenchmarkingServiceServicer_to_server(
-        BenchmarkingServicer(), server
-    )
-    server.add_insecure_port(f"[::]:{grpc_port}")
-    server.start()
-    logger.info(f"Benchmark gRPC server started on port {grpc_port}")
-    return server
 
 
 @dataclass(frozen=True)
@@ -731,177 +620,53 @@ def _invoke_grid2benchmark(config: BenchmarkConfig, source_code: str) -> dict[st
     return _normalize_benchmark_result(result, config)
 
 
-def _metric_value_from_any(value: Any) -> benchmarking_pb2.MetricValue:
-    metric = benchmarking_pb2.MetricValue()
+def execute_RunBenchmark(request: ExecuteRequest) -> ExecuteResponse:
+    """Start a benchmark run and return immediately with its task id.
 
-    if isinstance(value, bool):
-        metric.text = str(value)
-        return metric
+    A grid2op benchmark takes minutes. Running it inline — which is what this
+    operation used to do — held the orchestrator's HTTP request open for the
+    whole run, gave the caller no progress, and turned any connection reset into
+    a lost result (FR-24).
 
-    if isinstance(value, (int, float)):
-        metric.scalar = float(value)
-        return metric
+    The run now happens on a background thread. Callers poll
+    ``/control/status/{task_id}`` for progress and read
+    ``/control/output/{task_id}`` when it reports complete; that returns an HTTP
+    URL to the stored result, which the party that submitted the workflow can
+    fetch (FR-25).
 
-    if isinstance(value, list) and all(
-        isinstance(item, (int, float)) for item in value
-    ):
-        metric.series.values.extend(float(item) for item in value)
-        return metric
+    Args:
+        request: Orchestrator execute request carrying the benchmark inputs.
 
-    if isinstance(value, dict):
-        for key, nested in value.items():
-            if isinstance(nested, (dict, list)):
-                metric.attributes.values[str(key)] = json.dumps(nested)
-            else:
-                metric.attributes.values[str(key)] = str(nested)
-        return metric
-
-    metric.text = str(value)
-    return metric
-
-
-def _to_benchmark_result_proto(
-    result: dict[str, Any],
-) -> benchmarking_pb2.BenchmarkResult:
-    structured = benchmarking_pb2.BenchmarkRunResult()
-    episodes = result.get("episodes", [])
-    metadata = result.get("metadata", {})
-    scenario_metadata = (
-        metadata.get("scenarios", []) if isinstance(metadata, dict) else []
-    )
-
-    episodes_by_scenario: dict[int, list[dict[str, Any]]] = {}
-    for episode in episodes:
-        scenario_index = int(episode.get("scenario_index", 0))
-        episodes_by_scenario.setdefault(scenario_index, []).append(episode)
-
-    for index, scenario in enumerate(scenario_metadata):
-        if not isinstance(scenario, dict):
-            continue
-        scenario_result = structured.scenarios.add(
-            scenario_index=int(scenario.get("scenario_index", index)),
-            environment=str(
-                scenario.get("environment", {}).get("env_name", DEFAULT_ENV_NAME)
-                if isinstance(scenario.get("environment"), dict)
-                else DEFAULT_ENV_NAME
-            ),
+    Returns:
+        An ExecuteResponse with status ``running``, or ``failed`` when the
+        inputs are unusable or the service is already at capacity.
+    """
+    if not request.inputs:
+        return ExecuteResponse(
+            status="failed", task_id=request.task_id, error="No benchmark input provided"
         )
 
-        executed_ids = scenario.get("executed_time_series_ids", [])
-        if isinstance(executed_ids, list):
-            scenario_result.executed_time_series_ids.extend(
-                int(v) for v in executed_ids
-            )
-
-        for episode in episodes_by_scenario.get(scenario_result.scenario_index, []):
-            scenario_result.episodes.add(
-                episode_index=int(episode.get("episode_index", 0)),
-                scenario_index=int(episode.get("scenario_index", 0)),
-                steps=int(episode.get("steps", 0)),
-                overload_violations=int(episode.get("overload_violations", 0)),
-                runtime_seconds=float(episode.get("runtime_seconds", 0.0)),
-                terminated=bool(episode.get("terminated", True)),
-            )
-
-        scenario_kpis = scenario.get("kpis", {})
-        if isinstance(scenario_kpis, dict):
-            for key, value in scenario_kpis.items():
-                scenario_result.metrics[str(key)].CopyFrom(
-                    _metric_value_from_any(value)
-                )
-
-        for key, value in scenario.items():
-            if key in {
-                "scenario_index",
-                "environment",
-                "executed_time_series_ids",
-                "kpis",
-            }:
-                continue
-            scenario_result.metadata[str(key)] = (
-                json.dumps(value) if isinstance(value, (dict, list)) else str(value)
-            )
-
-    total_runtime = sum(float(e.get("runtime_seconds", 0.0)) for e in episodes)
-    total_violations = sum(int(e.get("overload_violations", 0)) for e in episodes)
-    total_steps = sum(int(e.get("steps", 0)) for e in episodes)
-
-    structured.summary.scenario_count = len(structured.scenarios)
-    structured.summary.episode_count = len(episodes)
-    structured.summary.total_overload_violations = total_violations
-    structured.summary.total_runtime_seconds = total_runtime
-    structured.summary.average_episode_length = (
-        total_steps / len(episodes) if episodes else 0.0
-    )
-
-    aggregate_metrics = result.get("kpis", {})
-    if isinstance(aggregate_metrics, dict):
-        for key, value in aggregate_metrics.items():
-            structured.summary.aggregates[str(key)].CopyFrom(
-                _metric_value_from_any(value)
-            )
-
-    if isinstance(metadata, dict):
-        for key, value in metadata.items():
-            if key == "scenarios":
-                continue
-            structured.metadata[str(key)] = (
-                json.dumps(value) if isinstance(value, (dict, list)) else str(value)
-            )
-
-    benchmark_result = benchmarking_pb2.BenchmarkResult(structured=structured)
-    benchmark_result.metadata["format"] = "benchmark.run_result.v2"
-    benchmark_result.metadata["metric_schema"] = "map<string,MetricValue>"
-    return benchmark_result
-
-
-def execute_RunBenchmark(request: ExecuteRequest) -> ExecuteResponse:
-    """Run the benchmark and publish a canonical structured protobuf result.
-
-    The benchmark operation consumes inputs resolved from AI-Effect DataReference
-    entries, executes grid2benchmark, and stores a BenchmarkRunResult payload under
-    GetBenchmarkResult.
-    """
-    global _cached_result_response
-
-    if not request.inputs:
-        return ExecuteResponse(status="failed", error="No benchmark input provided")
-
+    # Parsing happens on the calling thread so a malformed request is rejected
+    # synchronously, rather than becoming a background task that fails later.
     try:
         payload = _resolve_payload(request.inputs) or {}
-
         config = _parse_benchmark_config(payload)
         source_code = _get_algorithm_source(payload)
-
-        module = _load_algorithm_module(source_code)
-        _validate_algorithm_module(module)
-
-        benchmark_result = _invoke_grid2benchmark(config, source_code)
-
-        result_json = json.dumps(benchmark_result, indent=2)
-        get_task_manager().store_data(request.task_id, result_json, "json")
-
-        with _cache_lock:
-            _cached_result_response = benchmarking_pb2.GetBenchmarkResultResponse(
-                success=True,
-                message="Benchmark result available",
-                result=_to_benchmark_result_proto(benchmark_result),
-            )
-
-        grpc_host = os.environ.get("GRPC_HOST", "benchmark-runner")
-        grpc_port = os.environ.get("GRPC_PORT", "50051")
-
+        _validate_algorithm_module(_load_algorithm_module(source_code))
+    except Exception as validation_error:  # noqa: BLE001 - reported to the caller
+        logger.exception("RunBenchmark rejected: invalid request")
         return ExecuteResponse(
-            status="complete",
-            output=DataReference(
-                protocol="grpc",
-                uri=f"{grpc_host}:{grpc_port}",
-                format="GetBenchmarkResult",
-            ),
+            status="failed", task_id=request.task_id, error=str(validation_error)
         )
-    except Exception as exc:
-        logger.exception("RunBenchmark failed")
-        return ExecuteResponse(status="failed", error=str(exc))
+
+    def run_benchmark(report_progress) -> dict:
+        """Execute the benchmark, reporting coarse progress as it goes."""
+        report_progress(10)
+        benchmark_result = _invoke_grid2benchmark(config, source_code)
+        report_progress(90)
+        return benchmark_result
+
+    return get_job_runner().submit(request, run_benchmark, data_format=BENCHMARK_RESULT_FORMAT)
 
 
 benchmark_handlers = {
