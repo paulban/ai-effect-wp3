@@ -34,23 +34,47 @@ This use case runs a canonical protobuf/gRPC benchmark pipeline for network topo
 
 ## Running it
 
-The service publishes no host port (FR-19, FR-27). It is reachable only on the
-`ai-effect-services` network, at the address `export/dockerinfo.json` names —
-`benchmark-runner:8080` — which is where the orchestrator's workers dial it.
-`curl http://localhost:8004/health` no longer applies; there is nothing there.
-
 ```bash
-export NODE_PUBLIC_BASE_URL=https://node.example.org   # as the vendor sees it
-export SERVICE_API_KEY=$(openssl rand -hex 32)         # optional; open if unset
+export SERVICE_API_KEY=$(openssl rand -hex 32)   # optional; open if unset
 
-cd orchestrator && docker compose up -d                # api, redis, 3 workers
+cd orchestrator && docker compose up -d          # api, redis, 3 workers
 cd ../use-cases/dutch-node-benchmarking && docker compose up -d --build
 ```
 
-`NODE_PUBLIC_BASE_URL` is required: result references are built from it, so an
-internal Docker name here produces URLs the submitting party cannot fetch.
-
 `scripts/start.sh` and `scripts/stop.sh` wrap those two lines.
+
+### How the service is reached
+
+Two ways, and the distinction matters when something breaks.
+
+**The orchestrator's workers** dial it on the `ai-effect-services` network at the
+address `export/dockerinfo.json` names, `benchmark-runner:8080`. No host port is
+involved. This is the path all real work takes, and it is what `run_workflow.sh`
+probes from inside a worker container — a probe from the host would not exercise
+it.
+
+**This machine** reaches it at `http://localhost:8004`, published on loopback by
+`docker-compose.yml`. Result references point here, so a finished benchmark is
+fetchable with nothing else running.
+
+That host port is a development convenience and it contradicts FR-19 and FR-27,
+which exist so the node exposes exactly one port however many services it grows.
+For a real deployment, put the proxy back in front:
+
+```bash
+BENCHMARK_SELF_URL=https://node.example.org/svc/benchmark docker compose up -d
+```
+
+and drop the `ports:` block. Nothing else changes — the orchestrator never used
+the host port.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `BENCHMARK_HOST_PORT` | `8004` | Loopback port the service is published on |
+| `BENCHMARK_SELF_URL` | `http://localhost:8004` | Base URL result references are built from |
+| `SERVICE_API_KEY` | unset | Bearer token on `/control/*`; open if unset |
+| `BENCHMARK_MAX_CONCURRENT_JOBS` | `1` | Simultaneous benchmark runs |
+| `BENCHMARK_CPU_LIMIT` / `BENCHMARK_MEMORY_LIMIT` | `2.0` / `4G` | Resource ceiling |
 
 ## Run a benchmark through the orchestrator
 
@@ -122,12 +146,11 @@ interface description only.
 ## Local example smoke test with baseline algorithm
 
 `scripts/local_test_greedy.py` talks to the service directly rather than through
-the orchestrator, so it needs a reachable base URL. The container publishes no
-host port, so either run the service outside Docker, or point the script at the
-node's public route:
+the orchestrator, so it needs a reachable base URL — which the published host
+port now provides:
 
 ```bash
-python scripts/local_test_greedy.py --base-url http://localhost:8444/svc/benchmark
+python scripts/local_test_greedy.py --base-url http://localhost:8004
 ```
 
 It submits an inline payload with `algorithms/greedy_baseline.py` and fetches the

@@ -12,17 +12,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 USE_CASE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-# The service's result references are built from this. An internal Docker name
-# here produces URLs the party that submitted the workflow cannot fetch, so the
-# compose file refuses to start without it.
-export NODE_PUBLIC_BASE_URL="${NODE_PUBLIC_BASE_URL:-http://localhost:8444}"
-
 docker network create ai-effect-services >/dev/null 2>&1 || true
 
 cd "$USE_CASE_DIR"
 docker compose up -d --build
 
 echo
-echo "benchmark-runner is up on the ai-effect-services network. It publishes no"
-echo "host port; the orchestrator's workers reach it at benchmark-runner:8080."
+echo "benchmark-runner is up. The orchestrator's workers reach it at"
+echo "benchmark-runner:8080 on the ai-effect-services network, and this"
+echo "machine at http://localhost:8004 - where result references point."
 echo "Submit a workflow with services/benchmarking/run_workflow.sh."

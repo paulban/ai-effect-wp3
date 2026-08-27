@@ -19,6 +19,10 @@
 #   this script ◀── DataReference ◀────────────┘ /control/output
 #        └──── GET the artifact URL ────────────▶ /control/data/{task_id}
 #
+#
+# That last GET goes to the host port the service publishes on loopback. Work
+# still travels the network path above; the host port exists so a result is
+# fetchable from this machine without the node's proxy running.
 # Environment:
 #   ORCHESTRATOR_URL      Default http://localhost:18000
 #   ORCHESTRATOR_API_KEY  Bearer token on the orchestrator API, if it has one
@@ -549,9 +553,12 @@ if [ "$HTTP_CODE" = "000" ]; then
     rm -f "$RESULT_FILE"
     echo "  Could not reach $RESULT_URI."
     echo
-    echo "  That URL is built from the service's SELF_URL, which is its public"
-    echo "  route through the node's proxy. If the proxy is down, the artifact"
-    echo "  still exists — reach it on the internal network instead:"
+    echo "  That URL is built from the service's SELF_URL, which by default is"
+    echo "  the host port its compose file publishes. The orchestrator reaches the"
+    echo "  service without that port, so a missing publication shows up only here:"
+    echo "    docker port $SERVICE_HOST"
+    echo
+    echo "  The artifact is stored either way, and readable from inside the container:"
     echo "    docker exec $SERVICE_HOST curl -s http://localhost:$SERVICE_PORT/control/data/$TASK_ID"
     exit 1
 fi
