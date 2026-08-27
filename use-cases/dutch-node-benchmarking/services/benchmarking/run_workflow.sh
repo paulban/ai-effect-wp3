@@ -124,6 +124,34 @@ except ValueError:
 '
 }
 
+# Report the status code /control/status gives for an unknown task id, called
+# from inside a worker with the token we hold.
+#
+# This is how the script learns whether the service's control plane is open or
+# guarded, and whether our key is the right one. /health cannot answer it: it is
+# deliberately unauthenticated, so it says "ok" to a caller whose every
+# /control/* call will be rejected. /control/status is guarded, and an unknown
+# task id separates the two cases cleanly — 404 means the call was authorised
+# and the task simply does not exist, 401 means it was not.
+probe_control_auth() {
+    docker exec "$FIRST_WORKER" python -c '
+import sys, urllib.error, urllib.request
+
+url, token = sys.argv[1], sys.argv[2]
+request = urllib.request.Request(url)
+if token:
+    request.add_header("Authorization", "Bearer " + token)
+
+try:
+    with urllib.request.urlopen(request, timeout=5) as response:
+        print(response.status)
+except urllib.error.HTTPError as http_error:
+    print(http_error.code)
+except Exception:
+    print(0)
+' "http://$SERVICE_HOST:$SERVICE_PORT/control/status/preflight" "$1" 2>/dev/null
+}
+
 # curl with whichever bearer token the target expects.
 api_get() {
     local url="$1" token="${2:-}"
@@ -221,14 +249,53 @@ fi
 # published there and is not meant to be.
 printf "  %s from a worker ... " "$SERVICE_HOST:$SERVICE_PORT"
 if [ -n "$FIRST_WORKER" ]; then
-    if docker exec "$FIRST_WORKER" python -c "
-import sys, urllib.request
+    # Reports reachability and how many containers answer to the name, because
+    # the second is a failure mode on its own — see below.
+    PROBE=$(docker exec "$FIRST_WORKER" python -c '
+import socket, sys, urllib.request
+
+host, port = sys.argv[1], int(sys.argv[2])
+
 try:
-    with urllib.request.urlopen('http://$SERVICE_HOST:$SERVICE_PORT/health', timeout=5) as response:
-        sys.exit(0 if response.status == 200 else 1)
+    addresses = sorted({info[4][0] for info in socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)})
+except OSError:
+    print("unresolved 0 -")
+    sys.exit(0)
+
+try:
+    with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=5) as response:
+        state = "ok" if response.status == 200 else "unreachable"
 except Exception:
-    sys.exit(1)
-" >/dev/null 2>&1; then
+    state = "unreachable"
+
+print(state, len(addresses), ",".join(addresses))
+' "$SERVICE_HOST" "$SERVICE_PORT" 2>/dev/null)
+
+    PROBE_STATE=$(printf '%s' "$PROBE" | cut -d' ' -f1)
+    PROBE_ADDRESS_COUNT=$(printf '%s' "$PROBE" | cut -d' ' -f2)
+    PROBE_ADDRESSES=$(printf '%s' "$PROBE" | cut -d' ' -f3)
+
+    if [ "$PROBE_STATE" = "ok" ] && [ "${PROBE_ADDRESS_COUNT:-1}" -gt 1 ]; then
+        # Two containers on one network alias round-robin, so the worker starts
+        # the job on one and polls the other — which has never heard of the
+        # task. The job runs to completion and stores its artifact while the
+        # workflow fails with "Task not found", which is about as misleading as
+        # a failure gets. Usually a container left behind by an interrupted
+        # recreate.
+        echo "AMBIGUOUS"
+        echo
+        echo "  $SERVICE_HOST resolves to $PROBE_ADDRESS_COUNT addresses: $PROBE_ADDRESSES" >&2
+        echo "  More than one container answers to that name, so Docker balances" >&2
+        echo "  between them. The worker would start the job on one and poll the" >&2
+        echo "  other, and the workflow would fail with \"Task not found\" while the" >&2
+        echo "  job ran to completion somewhere you were not looking." >&2
+        echo >&2
+        echo "  Find the extra container with:" >&2
+        echo "    docker network inspect ai-effect-services" >&2
+        exit 1
+    fi
+
+    if [ "$PROBE_STATE" = "ok" ]; then
         echo "ok"
     else
         echo "UNREACHABLE"
@@ -243,10 +310,52 @@ else
     echo "skipped"
 fi
 
-if [ -z "$SERVICE_API_KEY" ]; then
-    echo "  service api key ... unset (the service must also be running open)"
+# A key mismatch used to surface as a failed workflow a submission later: the
+# script warned that SERVICE_API_KEY was unset and submitted anyway, and the
+# worker's call came back 401. It is knowable here, before anything is spent.
+printf "  service api key ... "
+if [ -n "$FIRST_WORKER" ]; then
+    AUTH_CODE=$(probe_control_auth "$SERVICE_API_KEY")
+
+    case "$AUTH_CODE" in
+        404)
+            # The call was authorised; the task id simply does not exist.
+            if [ -n "$SERVICE_API_KEY" ]; then
+                echo "accepted"
+            else
+                echo "not required"
+            fi
+            ;;
+        401)
+            if [ -z "$SERVICE_API_KEY" ]; then
+                echo "REQUIRED BUT UNSET"
+                echo
+                echo "  This service guards /control/* with a bearer token, so the worker's" >&2
+                echo "  call would be rejected and the workflow would fail. Re-run with the" >&2
+                echo "  key its container was started with:" >&2
+                echo >&2
+                echo "    SERVICE_API_KEY=\$(docker exec $SERVICE_HOST printenv SERVICE_API_KEY) \\" >&2
+                echo "      ./$(basename "$0")" >&2
+            else
+                echo "REJECTED"
+                echo
+                echo "  The service did not accept this SERVICE_API_KEY. It must match the" >&2
+                echo "  value its container was started with:" >&2
+                echo >&2
+                echo "    docker exec $SERVICE_HOST printenv SERVICE_API_KEY" >&2
+            fi
+            exit 1
+            ;;
+        *)
+            # Not worth failing the run over: the submission itself will say so
+            # more precisely than a guess here would.
+            echo "inconclusive (HTTP $AUTH_CODE)"
+            ;;
+    esac
+elif [ -z "$SERVICE_API_KEY" ]; then
+    echo "unset, unverified (the service must be running open)"
 else
-    echo "  service api key ... set"
+    echo "set, unverified"
 fi
 echo
 
