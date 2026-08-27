@@ -37,11 +37,18 @@ logger = logging.getLogger(__name__)
 
 
 class DataReference(BaseModel):
-    """Reference to data location."""
+    """Reference to data location.
+
+    `format` is the serialisation format the orchestrator validates against a
+    closed set (json, csv, parquet, protobuf, binary, xml). What the payload
+    logically *is* — a benchmark result, a synthesized grid — travels in
+    `metadata`, which the orchestrator passes through to its task listing.
+    """
 
     protocol: str
     uri: str
     format: str
+    metadata: dict[str, Any] = {}
 
 
 class ExecuteRequest(BaseModel):

@@ -4,8 +4,8 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-import common.benchmark_operations as benchmark_operations
-from common.benchmark_operations import (
+import benchmark.benchmark_operations as benchmark_operations
+from benchmark.benchmark_operations import (
     BenchmarkConfig,
     ScenarioConfig,
     TimeSeriesSourceConfig,

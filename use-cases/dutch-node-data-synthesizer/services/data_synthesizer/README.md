@@ -1,0 +1,150 @@
+# Dutch Node — Synthetic Power Grid
+
+Generates a synthetic transmission grid with the Chung-Lu-Chain method and
+returns it as a fetchable artifact: a node-link graph plus the same network as a
+pandapower snapshot, which is the form a consumer actually wants.
+
+**Spec:** `.claude/specs/dutch-node-target-architecture-spec.md` (FR-24 to FR-28)
+
+---
+
+## How a run works
+
+```
+orchestrator ──POST /control/execute──▶ synthetic-data:8080
+                    ConfigureAndSynthesize      │
+                                                │ task id, immediately (FR-24)
+                                      configure the grid (synchronous —
+                                      a bad request fails now, not in a
+                                      minute's time)
+                                                │
+                                      generate on a background thread:
+                                      topology → bus types → capacity →
+                                      loads → dispatch → transmission
+                                                │
+              ◀── /control/status, progress ────┤
+              ◀── /control/output ──────────────┘
+                  DataReference: http, the artifact URL
+
+vendor ──GET https://<node>/svc/synth/control/data/{job_id}──▶ the grid
+```
+
+The two logical steps — configure, then synthesize — are backed by one process,
+so the exported package declares the single operation `ConfigureAndSynthesize`.
+The configuration is passed to the synthesis inline rather than through a
+reference to this service's own endpoint, because both steps run here.
+
+## What is deliberately absent
+
+- **No published host port** (FR-19, FR-27). The service is reachable on the
+  `ai-effect-services` network at the address `export/dockerinfo.json` names,
+  `synthetic-data:8080`, and from outside through the node's proxy at
+  `/svc/synth/`. `curl http://localhost:8003/health` no longer applies.
+- **No gRPC server.** `data_synthesizer.proto` is still built and its message
+  types are still used internally to shape the configuration, but nothing
+  serves them. The results data plane is the HTTP artifact endpoint.
+- **No inline execution.** Synthesis runs on a background thread so the
+  orchestrator's request is not held open for its duration.
+
+## Running it
+
+```bash
+export NODE_PUBLIC_BASE_URL=https://node.example.org   # as the vendor sees it
+export SERVICE_API_KEY=$(openssl rand -hex 32)         # optional; open if unset
+
+cd orchestrator && docker compose up -d                # api, redis, 3 workers
+cd ../use-cases/dutch-node-data-synthesizer && docker compose up -d --build
+```
+
+`NODE_PUBLIC_BASE_URL` is required: result references are built from it, so an
+internal Docker name here produces URLs the submitting party cannot fetch.
+
+`scripts/start.sh` and `scripts/stop.sh` wrap those two lines.
+
+## Run a synthesis through the orchestrator
+
+```bash
+SERVICE_API_KEY=<same key> ./run_workflow.sh
+```
+
+The script submits the exported blueprint, waits for the workflow, and fetches
+the artifact the result reference points at — the full path a vendor walks. It
+checks first that the orchestrator is up, that its workers are running, and that
+the service answers at its `dockerinfo.json` address *from inside a worker*,
+because that is the call that has to succeed and a probe from the host would
+prove nothing.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ORCHESTRATOR_URL` | `http://localhost:18000` | Where to submit |
+| `ORCHESTRATOR_API_KEY` | unset | Bearer token on the orchestrator API |
+| `SERVICE_API_KEY` | unset | Forwarded to the service as `services_api_key`. Must match the container's, or the worker's call is rejected with 401 |
+| `OUTPUT_DIR` | `./results` | Where the fetched grid is written |
+
+## Input payload
+
+Inline base64 JSON. Every field is optional; the service's defaults produce a
+three-level, 180-node grid.
+
+```json
+{
+  "level_specs": [
+    {"n": 20,  "avg_k": 3.0, "diam": 6,  "dist_type": "dgln", "max_k": 15},
+    {"n": 60,  "avg_k": 2.2, "diam": 10, "dist_type": "dgln", "max_k": 10},
+    {"n": 100, "avg_k": 2.0, "diam": 15, "dist_type": "dgln", "max_k": 10}
+  ],
+  "connection_specs": {
+    "(0, 1)": {"type": "k-stars", "c": 0.174, "gamma": 4.15},
+    "(1, 2)": {"type": "k-stars", "c": 0.150, "gamma": 4.15}
+  },
+  "seed": 42,
+  "loading_level": "M",
+  "ref_sys_id": 1
+}
+```
+
+`loading_level` is `L`, `M` or `H`. Keys the service does not recognise are
+ignored silently, so a misspelled field yields a default grid rather than an
+error — check the run's printed parameters against what you meant to send.
+
+## Output shape
+
+JSON, served at `/control/data/{job_id}`:
+
+| Field | Contents |
+|---|---|
+| `status` | `success` |
+| `nodes`, `edges` | Counts of the generated topology |
+| `seed`, `loading_level`, `ref_sys_id` | Echoed configuration |
+| `benchmark_env_name` | Name of the grid2op environment this grid stands for |
+| `graph_data` | networkx node-link form, with the physics attributes attached |
+| `pandapower` | The same network via `pp.to_json()`, ready for `pp.from_json()` |
+
+The result reference's `format` is `json` — the encoding, which is what the
+orchestrator validates — and the logical name `GridData` travels in the
+reference's `metadata.data_format`.
+
+## Key files
+
+- `main.py` — entrypoint; builds the job runner and starts the shared app
+- `synth/synth_operations.py` — `ConfigureAndSynthesize` and the generation
+  pipeline, plus the networkx → pandapower conversion
+- `synth/proto_runtime.py` — generates the protobuf stubs if the image did not
+- `../../export/{blueprint,dockerinfo}.json` — orchestrator workflow metadata,
+  generated by `scripts/onboarding-export-generator.py`
+- `run_workflow.sh` — end-to-end orchestration run script
+- `test_pipeline.py` — a manual two-step smoke script against a directly
+  reachable service; it predates the removal of the host port and needs a
+  `--base-url`-style target to be useful again
+
+## Tests
+
+The generation pipeline has no automated tests of its own. The shared job
+lifecycle it depends on — background execution, progress, capacity, artifact
+references, and the per-workflow keying that stops two runs overwriting each
+other — is covered by the benchmark service's suite, which exercises the same
+`use-cases/common/` code:
+
+```bash
+python -m pytest use-cases/dutch-node-benchmarking/services/benchmarking/tests/ -q
+```

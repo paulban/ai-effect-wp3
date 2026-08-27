@@ -39,6 +39,36 @@ DEFAULT_MAX_CONCURRENT_JOBS = 1
 STATUS_RUNNING = "running"
 STATUS_FAILED = "failed"
 
+# Separates the workflow id from the task id in a job id. Anything but a path
+# separator will do; the artifact store rejects those.
+JOB_ID_SEPARATOR = "."
+
+
+def build_job_id(workflow_id: str, task_id: str) -> str:
+    """
+    Combine a workflow and task id into an id unique to one submission.
+
+    The orchestrator derives its task ids by hashing the node key, so every
+    workflow submitted against the same package receives the *same* task id.
+    Keying artifacts by it alone means each run silently overwrites the last,
+    and a result URL handed to one caller starts returning another caller's
+    data. The workflow id is what distinguishes them.
+
+    The orchestrator treats the id this service reports back as opaque — it
+    polls status, output and data with whatever ``/control/execute`` returned —
+    so widening it here needs no change on that side.
+
+    Args:
+        workflow_id: Workflow the task belongs to.
+        task_id: Task id assigned by the orchestrator.
+
+    Returns:
+        An id unique to this submission, safe as a single path segment.
+    """
+    if not workflow_id:
+        return task_id
+    return f"{workflow_id}{JOB_ID_SEPARATOR}{task_id}"
+
 
 class BatchJobRunner:
     """Accepts long computations, runs them in the background, stores results.
@@ -102,39 +132,43 @@ class BatchJobRunner:
                 carried in the DataReference.
 
         Returns:
-            An ExecuteResponse with status ``running`` and the task id, or
-            ``failed`` when the service is already at capacity.
+            An ExecuteResponse with status ``running`` and the job id, or
+            ``failed`` when the service is already at capacity. The job id is
+            what the caller polls with; see ``build_job_id`` for why it is not
+            simply the orchestrator's task id.
         """
+        job_id = build_job_id(request.workflow_id, request.task_id)
+
         if not self._capacity.acquire(blocking=False):
             logger.warning(
-                "Refusing task %s: already running %d job(s)",
-                request.task_id,
+                "Refusing job %s: already running %d job(s)",
+                job_id,
                 self._max_concurrent_jobs,
             )
             return ExecuteResponse(
                 status=STATUS_FAILED,
-                task_id=request.task_id,
+                task_id=job_id,
                 error=(
                     f"Service is at capacity ({self._max_concurrent_jobs} concurrent job(s)). "
                     "Retry once the running job completes."
                 ),
             )
 
-        task_manager.register_task(request.task_id, request)
+        task_manager.register_task(job_id, request)
 
         worker_thread = threading.Thread(
             target=self._run_job,
-            args=(request.task_id, work, data_format),
+            args=(job_id, work, data_format),
             daemon=True,
-            name=f"job-{request.task_id[:8]}",
+            name=f"job-{job_id[-8:]}",
         )
         worker_thread.start()
 
-        return ExecuteResponse(status=STATUS_RUNNING, task_id=request.task_id)
+        return ExecuteResponse(status=STATUS_RUNNING, task_id=job_id)
 
     def _run_job(
         self,
-        task_id: str,
+        job_id: str,
         work: Callable[[Callable[[int], None]], Any],
         data_format: str,
     ) -> None:
@@ -146,26 +180,26 @@ class BatchJobRunner:
         the service's capacity permanently.
 
         Args:
-            task_id: Job identifier.
+            job_id: Identifier the caller polls and fetches the artifact with.
             work: The computation.
             data_format: Logical format for the stored artifact.
         """
         try:
             def report_progress(percent: int) -> None:
                 """Publish progress for /control/status."""
-                task_manager.update_progress(task_id, percent)
+                task_manager.update_progress(job_id, percent)
 
             result = work(report_progress)
 
-            self._artifacts.store_json(task_id, result, data_format=data_format)
+            self._artifacts.store_json(job_id, result, data_format=data_format)
             task_manager.complete_task(
-                task_id, self._artifacts.build_reference(task_id, self._self_url)
+                job_id, self._artifacts.build_reference(job_id, self._self_url)
             )
-            logger.info("Task %s completed", task_id)
+            logger.info("Job %s completed", job_id)
 
-        except Exception as job_error:  # noqa: BLE001 - recorded on the task, not raised
-            logger.exception("Task %s failed", task_id)
-            task_manager.fail_task(task_id, str(job_error))
+        except Exception as job_error:  # noqa: BLE001 - recorded on the job, not raised
+            logger.exception("Job %s failed", job_id)
+            task_manager.fail_task(job_id, str(job_error))
 
         finally:
             self._capacity.release()

@@ -41,6 +41,25 @@ METADATA_SUFFIX = ".meta.json"
 # Suffix of the payload file itself.
 PAYLOAD_SUFFIX = ".payload"
 
+# Serialisation formats the orchestrator's DataReference accepts, keyed by the
+# media type an artifact is served with. The orchestrator validates `format`
+# against a closed set, so a reference is only usable if it names one of these.
+WIRE_FORMAT_BY_MEDIA_TYPE = {
+    "application/json": "json",
+    "text/csv": "csv",
+    "application/x-parquet": "parquet",
+    "application/x-protobuf": "protobuf",
+    "application/xml": "xml",
+    "text/xml": "xml",
+}
+
+# Used when the media type is not one of the above. "binary" is always accepted
+# and says the only true thing left: these are bytes.
+DEFAULT_WIRE_FORMAT = "binary"
+
+# Key under which the logical format travels in the reference's metadata.
+DATA_FORMAT_METADATA_KEY = "data_format"
+
 
 @dataclass(frozen=True)
 class StoredArtifact:
@@ -184,6 +203,14 @@ class FileArtifactStore:
             self_url: Base URL at which this service is reachable by the party
                 that will fetch the artifact, without a trailing slash.
 
+        `format` names the *encoding*, not the payload. The orchestrator
+        validates it against a closed set of serialisation formats, so a
+        reference announcing itself as "GridData" or "BenchmarkResult" is
+        rejected before the caller ever sees it — the workflow fails on the
+        result it just successfully computed. The logical name the caller
+        actually wants travels in `metadata`, which the orchestrator carries
+        through to its task listing untouched.
+
         Returns:
             A DataReference mapping with protocol "http", or None when no
             artifact has been stored for this task.
@@ -195,7 +222,10 @@ class FileArtifactStore:
         return {
             "protocol": "http",
             "uri": f"{self_url.rstrip('/')}/control/data/{task_id}",
-            "format": artifact.data_format,
+            "format": WIRE_FORMAT_BY_MEDIA_TYPE.get(
+                artifact.media_type, DEFAULT_WIRE_FORMAT
+            ),
+            "metadata": {DATA_FORMAT_METADATA_KEY: artifact.data_format},
         }
 
     def discard(self, task_id: str) -> None:
