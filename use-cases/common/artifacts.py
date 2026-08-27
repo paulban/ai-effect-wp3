@@ -16,6 +16,15 @@ needs no extra container, no credentials, and survives a service restart when
 pointed at a Docker volume. Swapping it for S3 or MinIO later changes only this
 module — the DataReference the caller sees is identical either way.
 
+Nothing prunes it. Every job writes one artifact under a key unique to its
+workflow, so the volume grows without bound — a synthesized grid carries a full
+node-link graph plus a pandapower network, so this is megabytes per run, not
+bytes. `discard` exists for a retention policy that has not been written; until
+it is, the ceiling is the volume's free space, and the failure when it arrives
+lands on `store` at the *end* of a job, after the whole computation has been
+spent. NFR-06 gives participant results a configurable retention period; the
+batch services have no equivalent.
+
 Spec coverage: FR-05, FR-25
 """
 
@@ -232,8 +241,10 @@ class FileArtifactStore:
         """
         Delete an artifact and its metadata.
 
-        Used by retention enforcement and by tests. Silently does nothing when
-        the artifact is already gone.
+        Nothing calls this yet. It claimed to be used by retention enforcement,
+        but no retention enforcement exists — see the note on unbounded growth
+        in this module's docstring. Silently does nothing when the artifact is
+        already gone.
 
         Args:
             task_id: Task or session identifier.
@@ -243,7 +254,10 @@ class FileArtifactStore:
         self._metadata_path(task_id).unlink(missing_ok=True)
 
     def discard_all(self) -> None:
-        """Remove every artifact in the store. Intended for test teardown."""
+        """Remove every artifact in the store.
+
+        Intended for test teardown, though no test uses it today.
+        """
         shutil.rmtree(self._base_directory, ignore_errors=True)
         self._base_directory.mkdir(parents=True, exist_ok=True)
 

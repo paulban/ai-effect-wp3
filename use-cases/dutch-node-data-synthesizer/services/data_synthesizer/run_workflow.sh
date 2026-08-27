@@ -233,16 +233,33 @@ printf "  %s from a worker ... " "$SERVICE_HOST:$SERVICE_PORT"
 if [ -n "$FIRST_WORKER" ]; then
     # Reports reachability and how many containers answer to the name, because
     # the second is a failure mode on its own — see below.
+    # `|| true` because a bare `VAR=$(cmd)` carries the command's exit status,
+    # and under `set -e` a failing `docker exec` — a worker that died since the
+    # count above, an image without python — would end the script mid-line with
+    # no message at all. An empty PROBE falls through to the UNREACHABLE branch,
+    # which is what the operator needs to read.
     PROBE=$(docker exec "$FIRST_WORKER" python -c '
 import socket, sys, urllib.request
 
 host, port = sys.argv[1], int(sys.argv[2])
 
 try:
-    addresses = sorted({info[4][0] for info in socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)})
+    records = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
 except OSError:
     print("unresolved 0 -")
     sys.exit(0)
+
+# Grouped by address family, because one container on a dual-stack network has
+# both an A and an AAAA record. Counting records rather than containers would
+# refuse a perfectly healthy stack and send the operator hunting for a duplicate
+# that does not exist. What matters is how many containers answer, which is the
+# largest number of distinct addresses within a single family.
+addresses_by_family = {}
+for record in records:
+    addresses_by_family.setdefault(record[0], set()).add(record[4][0])
+
+addresses = sorted({address for group in addresses_by_family.values() for address in group})
+container_count = max((len(group) for group in addresses_by_family.values()), default=0)
 
 try:
     with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=5) as response:
@@ -250,14 +267,14 @@ try:
 except Exception:
     state = "unreachable"
 
-print(state, len(addresses), ",".join(addresses))
-' "$SERVICE_HOST" "$SERVICE_PORT" 2>/dev/null)
+print(state, container_count, ",".join(addresses))
+' "$SERVICE_HOST" "$SERVICE_PORT" 2>/dev/null || true)
 
     PROBE_STATE=$(printf '%s' "$PROBE" | cut -d' ' -f1)
-    PROBE_ADDRESS_COUNT=$(printf '%s' "$PROBE" | cut -d' ' -f2)
+    PROBE_CONTAINER_COUNT=$(printf '%s' "$PROBE" | cut -d' ' -f2)
     PROBE_ADDRESSES=$(printf '%s' "$PROBE" | cut -d' ' -f3)
 
-    if [ "$PROBE_STATE" = "ok" ] && [ "${PROBE_ADDRESS_COUNT:-1}" -gt 1 ]; then
+    if [ "$PROBE_STATE" = "ok" ] && [ "${PROBE_CONTAINER_COUNT:-1}" -gt 1 ]; then
         # Two containers on one network alias round-robin, so the worker starts
         # the job on one and polls the other — which has never heard of the
         # task. The job runs to completion and stores its artifact while the
@@ -266,7 +283,7 @@ print(state, len(addresses), ",".join(addresses))
         # recreate.
         echo "AMBIGUOUS"
         echo
-        echo "  $SERVICE_HOST resolves to $PROBE_ADDRESS_COUNT addresses: $PROBE_ADDRESSES" >&2
+        echo "  $SERVICE_HOST answers on $PROBE_CONTAINER_COUNT addresses: $PROBE_ADDRESSES" >&2
         echo "  More than one container answers to that name, so Docker balances" >&2
         echo "  between them. The worker would start the job on one and poll the" >&2
         echo "  other, and the workflow would fail with \"Task not found\" while the" >&2
@@ -297,7 +314,12 @@ fi
 # worker's call came back 401. It is knowable here, before anything is spent.
 printf "  service api key ... "
 if [ -n "$FIRST_WORKER" ]; then
-    AUTH_CODE=$(probe_control_auth "$SERVICE_API_KEY")
+    # `|| true` for the same reason as the probe above: without it a failing
+    # `docker exec` ends the script silently, and the "inconclusive" branch
+    # below — which exists precisely to tolerate an unanswerable probe — can
+    # never be reached. The embedded Python itself always exits 0.
+    AUTH_CODE=$(probe_control_auth "$SERVICE_API_KEY" || true)
+    AUTH_CODE="${AUTH_CODE:-0}"
 
     case "$AUTH_CODE" in
         404)
