@@ -1,4 +1,0 @@
-# Artifacts fetched by run_workflow.sh. One file per workflow, and the grid and
-# benchmark payloads are large — these belong on the machine that ran them, not
-# in the repository.
-results/
