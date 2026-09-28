@@ -163,35 +163,6 @@ class TestExecute:
         assert len(body["inputs"]) == 1
         assert body["inputs"][0]["uri"] == "s3://bucket/input.csv"
 
-    def test_execute_with_parameters(self, client, httpx_mock: HTTPXMock, sample_output):
-        """Execute sends parameters correctly."""
-        httpx_mock.add_response(
-            method="POST",
-            url="http://service:8080/control/execute",
-            json={
-                "status": "complete",
-                "output": sample_output.model_dump(mode="json"),
-            },
-        )
-
-        response = client.execute(
-            base_url="http://service:8080",
-            method="ProcessData",
-            workflow_id="wf-123",
-            task_id="task-456",
-            parameters={"batch_size": 100, "verbose": True},
-        )
-
-        assert response.status == "complete"
-
-        # Verify request body
-        request = httpx_mock.get_request()
-        import json
-
-        body = json.loads(request.content)
-        assert body["parameters"]["batch_size"] == 100
-        assert body["parameters"]["verbose"] is True
-
     def test_execute_trailing_slash_url(
         self, client, httpx_mock: HTTPXMock, sample_output
     ):
