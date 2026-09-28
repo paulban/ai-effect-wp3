@@ -1,7 +1,6 @@
 {
     "nodes": [
         {
-            "proto_uri": "microservice/human_ai_interaction_testing1.proto",
             "image": "ghcr.io/ai-effect/dutch-node-hai-testing:latest",
             "node_type": "DataSource",
             "container_name": "human_ai_interaction_testing1",

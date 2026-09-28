@@ -1,17 +1,17 @@
 """Synthetic power grid operation handlers for AI-Effect orchestrator.
 
 This module provides operation handlers for the Chung-Lu-Chain power grid synthesizer.
-Control execution uses AI-Effect HTTP control endpoints, while inter-node data exchange
-uses the canonical protobuf/gRPC data plane.
+Control execution uses AI-Effect HTTP control endpoints; the synthesized grid is
+stored as a JSON artifact and served over HTTP.
 
 Pipeline:
     ConfigureGrid -> SynthesizeGrid
 
 Handlers:
-        - ConfigureGrid: Accept synthesis parameters and publish a
-            dutch.data_synthesizer.GridSynthesisConfig artifact via GetGridConfig.
-        - SynthesizeGrid: Consume GridSynthesisConfig, generate the grid, and publish
-            dutch.data_synthesizer.GridData via GetGridData.
+        - ConfigureGrid: Accept synthesis parameters and return the derived
+            synthesis configuration inline as JSON.
+        - SynthesizeGrid: Consume that configuration, generate the grid, and
+            return it as a JSON payload including a pandapower network.
 
 Usage:
     from common import synth_handlers, run
@@ -25,14 +25,9 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import os
-import threading
-import uuid
-from concurrent import futures
 from pathlib import Path
 from typing import Any
 
-import grpc
 import matplotlib
 
 matplotlib.use("Agg")
@@ -50,8 +45,6 @@ from powergrid_synth.transmission.transmission import TransmissionLineAllocator
 
 from common.batch_jobs import BatchJobRunner, build_runner
 from common.concurrent import DataReference, ExecuteRequest, ExecuteResponse
-
-from .proto_runtime import ensure_generated
 
 logger = logging.getLogger(__name__)
 
@@ -87,13 +80,6 @@ def get_job_runner() -> BatchJobRunner:
         _job_runner = build_runner()
     return _job_runner
 
-ensure_generated("data_synthesizer.proto")
-import data_synthesizer_pb2  # type: ignore  # noqa: E402
-import data_synthesizer_pb2_grpc  # type: ignore  # noqa: E402
-
-_cache_lock = threading.Lock()
-_cached_config_response: data_synthesizer_pb2.GetGridConfigResponse | None = None
-_cached_grid_response: data_synthesizer_pb2.GetGridDataResponse | None = None
 
 # Default grid configuration
 DEFAULT_LEVEL_SPECS = [
@@ -112,23 +98,10 @@ DEFAULT_LOADING_LEVEL = "M"
 DEFAULT_REF_SYS_ID = 1
 DEFAULT_GRID2OP_ENV_NAME = "synthetic-grid-v0"
 
-_LOADING_LEVEL_TO_PROTO = {
-    "L": data_synthesizer_pb2.LOADING_LEVEL_LOW,
-    "M": data_synthesizer_pb2.LOADING_LEVEL_MEDIUM,
-    "H": data_synthesizer_pb2.LOADING_LEVEL_HIGH,
-}
-
-_LOADING_LEVEL_FROM_PROTO = {
-    data_synthesizer_pb2.LOADING_LEVEL_LOW: "L",
-    data_synthesizer_pb2.LOADING_LEVEL_MEDIUM: "M",
-    data_synthesizer_pb2.LOADING_LEVEL_HIGH: "H",
-}
-
 
 def _grid2op_env_name(_: int) -> str:
     """Return the fixed synthesized Grid2Op environment name."""
     return DEFAULT_GRID2OP_ENV_NAME
-
 
 
 def _decode_inline_input(input_ref: dict) -> dict:
@@ -180,128 +153,6 @@ def fetch_http_data(uri: str, timeout: float = 60.0) -> str:
     return resp.text
 
 
-def _fetch_grid_config_from_upstream(
-    grpc_uri: str,
-) -> data_synthesizer_pb2.GetGridConfigResponse:
-    """Fetch synthesized configuration using gRPC from upstream service."""
-    logger.info(f"Fetching grid config via gRPC from {grpc_uri}")
-    channel = grpc.insecure_channel(grpc_uri)
-    stub = data_synthesizer_pb2_grpc.DataSynthesizerServiceStub(channel)
-    try:
-        return stub.GetGridConfig(data_synthesizer_pb2.GetGridConfigRequest())
-    finally:
-        channel.close()
-
-
-def _coerce_int_list(values: Any) -> list[int]:
-    if values is None:
-        return []
-    if isinstance(values, (list, tuple)):
-        return [int(v) for v in values]
-    return [int(values)]
-
-
-def _parse_connection_key(key: Any) -> tuple[int, int]:
-    if isinstance(key, str) and key.startswith("("):
-        nums = key.strip("()").split(",")
-        return int(nums[0].strip()), int(nums[1].strip())
-    if isinstance(key, (list, tuple)) and len(key) == 2:
-        return int(key[0]), int(key[1])
-    parts = str(key).replace("_", "-").split("-")
-    if len(parts) != 2:
-        raise ValueError(f"Invalid connection key: {key}")
-    return int(parts[0]), int(parts[1])
-
-
-def _loading_level_to_proto(value: str) -> int:
-    return _LOADING_LEVEL_TO_PROTO.get(
-        str(value).upper(), data_synthesizer_pb2.LOADING_LEVEL_MEDIUM
-    )
-
-
-def _loading_level_from_proto(value: int) -> str:
-    return _LOADING_LEVEL_FROM_PROTO.get(value, DEFAULT_LOADING_LEVEL)
-
-
-def _grid_config_to_proto(
-    config_output: dict[str, Any],
-) -> data_synthesizer_pb2.GridSynthesisConfig:
-    """Convert generated synthesis config payload to protobuf GridSynthesisConfig."""
-    config_msg = data_synthesizer_pb2.GridSynthesisConfig(
-        seed=int(config_output.get("seed", DEFAULT_SEED)),
-        loading_level=_loading_level_to_proto(
-            str(config_output.get("loading_level", DEFAULT_LOADING_LEVEL))
-        ),
-        ref_sys_id=int(config_output.get("ref_sys_id", DEFAULT_REF_SYS_ID)),
-    )
-
-    for key, value in config_output.get("connection_specs", {}).items():
-        from_level, to_level = _parse_connection_key(key)
-        config_msg.connections.add(
-            from_level=from_level,
-            to_level=to_level,
-            type=str(value.get("type", "")),
-            c=float(value.get("c", 0.0)),
-            gamma=float(value.get("gamma", 0.0)),
-        )
-
-    for degree_values in config_output.get("degrees_by_level", []):
-        config_msg.degrees_by_level.add(values=_coerce_int_list(degree_values))
-
-    for d in config_output.get("diameters_by_level", []):
-        config_msg.diameters_by_level.append(int(d))
-
-    for key, values in config_output.get("transformer_degrees", {}).items():
-        from_level, to_level = _parse_connection_key(key)
-        if not isinstance(values, (list, tuple)) or len(values) != 2:
-            raise ValueError(
-                f"transformer_degrees[{key}] must contain exactly two degree vectors"
-            )
-        source_degrees = _coerce_int_list(values[0])
-        target_degrees = _coerce_int_list(values[1])
-        config_msg.transformer_degrees.add(
-            from_level=from_level,
-            to_level=to_level,
-            source_degrees=source_degrees,
-            target_degrees=target_degrees,
-        )
-
-    return config_msg
-
-
-def _proto_grid_config_to_dict(
-    config_msg: data_synthesizer_pb2.GridSynthesisConfig,
-) -> dict[str, Any]:
-    """Convert protobuf GridSynthesisConfig to dictionary used by synthesis logic."""
-    transformer_degrees: dict[str, Any] = {
-        str((pair.from_level, pair.to_level)): [
-            list(pair.source_degrees),
-            list(pair.target_degrees),
-        ]
-        for pair in config_msg.transformer_degrees
-    }
-
-    connection_specs: dict[str, dict[str, Any]] = {}
-    for conn in config_msg.connections:
-        connection_specs[str((conn.from_level, conn.to_level))] = {
-            "type": str(conn.type),
-            "c": float(conn.c),
-            "gamma": float(conn.gamma),
-        }
-
-    return {
-        "seed": int(config_msg.seed),
-        "loading_level": _loading_level_from_proto(config_msg.loading_level),
-        "ref_sys_id": int(config_msg.ref_sys_id),
-        "connection_specs": connection_specs,
-        "degrees_by_level": [
-            [int(v) for v in seq.values] for seq in config_msg.degrees_by_level
-        ],
-        "diameters_by_level": list(config_msg.diameters_by_level),
-        "transformer_degrees": transformer_degrees,
-    }
-
-
 _DEFAULT_VOLTAGE_BY_LEVEL: dict[int, float] = {
     0: 220.0,
     1: 110.0,
@@ -315,8 +166,7 @@ def _grid_to_pandapower_json(graph_data: dict[str, Any]) -> str:
     network and return it as a JSON string via pp.to_json().
 
     This is the authoritative networkx → pandapower conversion.  The result is
-    stored verbatim in GridData.pandapower_json so the benchmark service can call
-    pp.from_json() directly without any lossy intermediate proto fields.
+    stored in the grid artifact so a consumer can call pp.from_json() directly.
     """
     import pandapower as pp  # deferred: not available at module import time in tests
 
@@ -419,29 +269,6 @@ def _grid_to_pandapower_json(graph_data: dict[str, Any]) -> str:
     return pp_json
 
 
-def _grid_data_to_proto(
-    output: dict[str, Any],
-    config_output: dict[str, Any],
-    pp_json: str,
-) -> data_synthesizer_pb2.GridData:
-    """Build a GridData proto from synthesis output carrying a pandapower JSON snapshot."""
-    grid_data = data_synthesizer_pb2.GridData(
-        grid_id="dutch-synthesized-grid",
-        pandapower_json=pp_json,
-        seed=int(output.get("seed", DEFAULT_SEED)),
-        loading_level=str(output.get("loading_level", DEFAULT_LOADING_LEVEL)),
-        ref_sys_id=int(output.get("ref_sys_id", DEFAULT_REF_SYS_ID)),
-        source_config=_grid_config_to_proto(config_output),
-    )
-    grid_data.metadata["status"] = str(output.get("status", "success"))
-    grid_data.metadata["nodes"] = str(output.get("nodes", 0))
-    grid_data.metadata["edges"] = str(output.get("edges", 0))
-    grid_data.metadata["grid2op_env_name"] = str(
-        output.get("benchmark_env_name", DEFAULT_GRID2OP_ENV_NAME)
-    )
-    return grid_data
-
-
 # =============================================================================
 # ConfigureGrid Handler
 # =============================================================================
@@ -466,11 +293,9 @@ def execute_ConfigureGrid(request: ExecuteRequest) -> ExecuteResponse:
         ref_sys_id: Reference system ID (default: 1)
 
     Returns:
-        DataReference(protocol="grpc", format="GetGridConfig") with a canonical
-        GridSynthesisConfig payload served by this node.
+        DataReference(protocol="inline", format="json") carrying the derived
+        synthesis configuration.
     """
-    global _cached_config_response
-
     # Parse input parameters or use defaults
     params = {}
     if request.inputs:
@@ -526,23 +351,10 @@ def execute_ConfigureGrid(request: ExecuteRequest) -> ExecuteResponse:
         # would overwrite it.
         config_json = json.dumps(config_output, default=_json_default)
 
-        with _cache_lock:
-            _cached_config_response = data_synthesizer_pb2.GetGridConfigResponse(
-                success=True,
-                message="Grid configuration generated",
-                config=_grid_config_to_proto(config_output),
-            )
-
         logger.info(f"Grid configuration complete: {len(level_specs)} levels")
 
-        grpc_host = os.environ.get("GRPC_HOST", "synthetic-data")
-        grpc_port = os.environ.get("GRPC_PORT", "50051")
-
-        # Handed back inline rather than as a reference to this service's own
-        # gRPC endpoint. The two steps run in the same process, so the previous
-        # reference made the handoff a network round trip to itself — and broke
-        # outright once the unused gRPC server was removed. Inline keeps the
-        # config where its only consumer already is.
+        # Handed back inline: the two steps run in the same process, so the
+        # config stays where its only consumer already is.
         return ExecuteResponse(
             status="complete",
             output=DataReference(
@@ -566,8 +378,8 @@ def _synthesize_grid(request: ExecuteRequest) -> dict:
     """Generate a synthetic power grid using configuration from ConfigureGrid.
 
     Input:
-        inputs[0]: DataReference from ConfigureGrid. Canonical path is
-        protocol="grpc" and format="GetGridConfig".
+        inputs[0]: DataReference to the configuration from ConfigureGrid,
+        either inline JSON or an HTTP(S) URL returning it.
 
     Runs the full generation pipeline:
         1. Generate base topology with PowerGridGenerator
@@ -578,28 +390,16 @@ def _synthesize_grid(request: ExecuteRequest) -> dict:
         6. Allocate transmission lines
 
     Returns:
-        DataReference(protocol="grpc", format="GetGridData") with canonical
-        GridData payload.
+        The synthesized grid as a JSON-serializable dict.
     """
-    global _cached_grid_response
-
     if not request.inputs:
         raise ValueError("No input configuration provided")
 
     input_ref = request.inputs[0]
 
     try:
-        # Fetch configuration from upstream
         protocol = input_ref.get("protocol", "")
-        if protocol == "grpc":
-            upstream_uri = input_ref.get("uri", "")
-            if not upstream_uri:
-                raise ValueError("Missing grpc uri for SynthesizeGrid input")
-            config_response = _fetch_grid_config_from_upstream(upstream_uri)
-            if not config_response.success:
-                raise ValueError(f"Upstream gRPC config fetch failed: {config_response.message}")
-            config = _proto_grid_config_to_dict(config_response.config)
-        elif protocol in ("http", "https"):
+        if protocol in ("http", "https"):
             config_json = fetch_http_data(input_ref["uri"])
             config = json.loads(config_json)
         elif protocol == "inline":
@@ -607,7 +407,7 @@ def _synthesize_grid(request: ExecuteRequest) -> dict:
         else:
             raise ValueError((
                     f"Unsupported protocol: {protocol}. "
-                    "Expected 'grpc', 'http', 'https', or 'inline'."),
+                    "Expected 'http', 'https', or 'inline'."),
             )
 
         seed = config.get("seed", DEFAULT_SEED)
@@ -669,8 +469,7 @@ def _synthesize_grid(request: ExecuteRequest) -> dict:
         }
 
         # pandapower is the interchange format a consumer of this grid actually
-        # wants, so it travels in the stored artifact rather than only inside a
-        # protobuf message that nothing resolves.
+        # wants, so it travels in the stored artifact.
         logger.info("Converting synthesized grid to pandapower network...")
         output["pandapower"] = json.loads(_grid_to_pandapower_json(graph_data))
 
@@ -695,8 +494,8 @@ def execute_ConfigureAndSynthesize(request: ExecuteRequest) -> ExecuteResponse:
     Synthesis is minutes of work, so it runs on a background thread rather than
     holding the orchestrator's request open (FR-24). Callers poll
     ``/control/status/{task_id}`` and read ``/control/output/{task_id}``, which
-    returns an HTTP URL to the stored grid — fetchable by whoever submitted the
-    workflow, unlike the gRPC reference this operation used to return (FR-25).
+    returns an HTTP URL to the stored grid, fetchable by whoever submitted the
+    workflow (FR-25).
 
     Args:
         request: Orchestrator execute request carrying the synthesis parameters.

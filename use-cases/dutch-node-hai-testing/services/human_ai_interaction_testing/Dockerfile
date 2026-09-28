@@ -5,7 +5,7 @@
 # package as `common`, exactly like every other WP3 service, and its own
 # modules as `hai`.
 #
-# No Docker socket, no results bind mount and no gRPC port: sessions run on
+# No Docker socket and no results bind mount: sessions run on
 # pre-declared pool slots configured over HTTP, and results are posted back to
 # this service rather than left as files for it to poll for.
 FROM python:3.11-slim

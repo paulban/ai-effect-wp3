@@ -1,8 +1,7 @@
 """Synthetic power grid service entrypoint.
 
 Grid synthesis is minutes of work, so the service accepts a job and returns a
-task id rather than holding the request open. There is no gRPC server: the
-synthesized grid is served as an artifact over HTTP.
+task id rather than holding the request open. The synthesized grid is served as an artifact over HTTP.
 """
 
 from common.batch_jobs import build_runner

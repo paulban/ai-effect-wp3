@@ -95,12 +95,12 @@ class BlueprintNode(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     container_name: str
-    proto_uri: str
+    proto_uri: str | None = None
     image: str
     node_type: str
     operation_signature_list: list[BlueprintOperationList]
 
-    @field_validator("container_name", "proto_uri", "image", "node_type")
+    @field_validator("container_name", "image", "node_type")
     @classmethod
     def field_not_empty(cls, v: str) -> str:
         if not v or not v.strip():

@@ -46,9 +46,8 @@ The orchestrator polls `/control/status/{task_id}` and reads the result from
   slot are reachable only on the internal network.
 - **No polling thread and no shared results directory.** Results are posted to
   the service; the second one to arrive completes the session.
-- **No gRPC server.** The results data plane is the HTTP artifact endpoint.
-  `human_ai_interaction_testing.proto` is unchanged and remains the portal's
-  interface description.
+- **No gRPC or protobuf.** The service runs standalone, not as a pipeline
+  node. The results data plane is the HTTP artifact endpoint.
 
 ## Running it
 

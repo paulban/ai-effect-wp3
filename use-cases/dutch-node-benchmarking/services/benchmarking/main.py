@@ -1,8 +1,7 @@
 """Grid2Op benchmark service entrypoint.
 
 A benchmark run is minutes of CPU-bound work, so the service accepts a job and
-returns a task id rather than holding the request open. There is no gRPC
-server: the result is served as an artifact over HTTP, which the party that
+returns a task id rather than holding the request open. The result is served as an artifact over HTTP, which the party that
 submitted the workflow can fetch.
 """
 

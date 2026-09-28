@@ -4,7 +4,7 @@
 # copied in alongside this service's own code. The service imports the shared
 # package as `common` and its own modules as `benchmark`.
 #
-# No published port and no gRPC server: results are served as artifacts over
+# No published port: results are served as artifacts over
 # HTTP at /control/data, reachable only from the orchestrator's workers on the
 # shared Docker network.
 FROM python:3.11-slim

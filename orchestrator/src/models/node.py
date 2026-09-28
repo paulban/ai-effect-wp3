@@ -42,10 +42,12 @@ class OperationSignatureList:
 class Node:
     """Represents a workflow node."""
     container_name: str
-    proto_uri: str
     image: str
     node_type: str
     operation_signature_list: List[OperationSignatureList]
+    # Interface description for the portal. Optional: a standalone service
+    # driven only over the HTTP control plane has no proto.
+    proto_uri: Optional[str] = None
     
     # Runtime properties
     address: Optional[str] = None

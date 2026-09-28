@@ -3,19 +3,15 @@
 Everything here is translation: decode what arrived over HTTP, hand it to
 ``session_service``, and encode what comes back. The session logic itself lives
 in that module so the control plane and the result-collection endpoints cannot
-drift apart — which is what happened in the previous design, where the HTTP
-handler and the gRPC handler each carried a copy of the session-start sequence.
+drift apart.
 
 Two things this module deliberately no longer does:
 
 * It does not create containers. Sessions run on pre-declared pool slots, so
   the Docker SDK, the socket mount and the per-session host port bindings are
   gone, and with them the reason the service needed root-equivalent access.
-* It does not run a gRPC server. The results data plane is now the HTTP
-  artifact endpoint, whose DataReference the submitting caller can actually
-  fetch. Nothing called the gRPC endpoints, and not binding the port keeps it
-  off the network entirely. ``human_ai_interaction_testing.proto`` is unchanged
-  and remains the portal's interface description.
+* It does not run a gRPC server. The results data plane is the HTTP artifact
+  endpoint, whose DataReference the submitting caller can actually fetch.
 
 Spec coverage: FR-01, FR-04, FR-05, FR-19, FR-20, FR-21
 """

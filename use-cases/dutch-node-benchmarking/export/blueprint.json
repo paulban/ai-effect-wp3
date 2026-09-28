@@ -1,7 +1,6 @@
 {
     "nodes": [
         {
-            "proto_uri": "microservice/benchmarking1.proto",
             "image": "ghcr.io/ai-effect/dutch-node-benchmarking:latest",
             "node_type": "DataSource",
             "container_name": "benchmarking1",
