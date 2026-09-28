@@ -756,6 +756,14 @@ class TestGraphStructure:
         assert node.node.image == "service-a:latest"
         assert node.node.node_type == "MLModel"
 
+    def test_node_without_proto_uri(self, parser):
+        """A node without a proto (HTTP-only service) parses with proto_uri None."""
+        data = create_minimal_blueprint()
+        del data["nodes"][0]["proto_uri"]
+        graph = parser.parse_json(data)
+
+        assert graph.all_nodes["service-a:Process"].node.proto_uri is None
+
     def test_operation_has_correct_signature(self, parser):
         """Parsed operation has correct signature."""
         data = create_minimal_blueprint()

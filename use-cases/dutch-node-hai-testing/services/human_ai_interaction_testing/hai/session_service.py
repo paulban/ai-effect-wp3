@@ -12,9 +12,9 @@ that:
   session.
 
 Nothing here touches Docker, the filesystem layout of the host, or a polling
-loop. The transports that call into it — the orchestrator's HTTP control plane
-and the gRPC data plane — live in ``session_operations`` and share this one
-implementation, so the two cannot drift apart.
+loop. The HTTP transports that call into it — the orchestrator's control plane
+and the result-collection endpoints — live in ``session_operations`` and share
+this one implementation, so they cannot drift apart.
 
 Spec coverage: FR-01, FR-05, FR-06, FR-07, FR-08, FR-10, FR-20, FR-21, FR-22
 """
@@ -64,9 +64,7 @@ SESSION_RESULT_FORMAT = "HumanAISessionResult"
 class HumanAISessionSpec:
     """What the caller asked for when starting a session.
 
-    Mirrors the fields of the proto message of the same name, but as a plain
-    dataclass so this module does not depend on generated protobuf types and
-    can be exercised without compiling them.
+    Decoded from the inline JSON payload of a StartHumanAISession request.
 
     Attributes:
         scenario_name: Grid scenario the simulator should load.

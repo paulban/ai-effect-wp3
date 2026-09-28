@@ -10,13 +10,10 @@ services:
     container_name: tef-hai-testing-service
     ports:
       - "8005:8080"
-      - "50055:50051"
     environment:
       - HOST=0.0.0.0
       - PORT=8080
       - SELF_URL=http://hai-testing-service:8080
-      - GRPC_HOST=hai-testing-service
-      - GRPC_PORT=50051
       # --- powergrid-simulator-app (per-session, launched by Docker SDK) ---
       # Image for the powergrid-simulator-app (Case 2 / web-app mode, Flask on port 5000).
       # Build locally from InteractiveAI/usecases_examples/PowerGrid/ and set this.

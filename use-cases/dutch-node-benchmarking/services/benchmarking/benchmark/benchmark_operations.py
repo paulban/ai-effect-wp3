@@ -1,7 +1,7 @@
 """Grid2Benchmark operations for AI-Effect orchestration.
 
 RunBenchmark evaluates a submitted algorithm against a preset grid2op scenario
-and publishes canonical structured benchmark protobuf results. The benchmark is
+and publishes structured benchmark results as JSON. The benchmark is
 a standalone service: its scenario is fixed configuration, not data supplied by
 the data synthesizer.
 """

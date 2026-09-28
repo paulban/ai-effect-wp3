@@ -16,7 +16,7 @@ result file; the WP3 service only transitions to COMPLETED when **both** files a
 ```
 AI Vendor / Orchestrator
      │
-     │  gRPC: StartHumanAISession / GetSessionStatus / GetSessionResult
+     │  HTTP control plane: StartHumanAISession
      ▼
 [WP3 hai-testing-service]
      │  Docker Python SDK — launches TWO containers simultaneously
@@ -119,7 +119,6 @@ docker compose -f docker-compose-all.yml up --build
 | `HAI_DOCKER_NETWORK` | `ai-effect-services` | Docker network for both sub-containers |
 | `HAI_KPIS_FILENAME` | `kpis.json` | Filename written by InteractiveAI on episode end |
 | `HAI_SURVEY_FILENAME` | `survey_outcomes.json` | Filename written by hmisurveys on survey submit |
-| `GRPC_PORT` | `50051` | gRPC data plane port |
 | `PORT` | `8080` | HTTP control plane port |
 
 ## Required Volume Mounts
@@ -132,7 +131,7 @@ volumes:
   - /tmp/hai_sessions:/hai-sessions             # Shared results directory (both tools write here)
 ```
 
-## gRPC API
+## Session operations
 
 **StartHumanAISession** — Start a session, receive two browser URLs.
 
@@ -164,8 +163,8 @@ FAILED if timeout expires before both files appear.
 
 ```
 Returns:
-  kpis            map<string, MetricValue>  — from InteractiveAI kpis.json
-  survey_outcomes map<string, MetricValue>  — from hmisurveys survey_outcomes.json
+  kpis            object  — from InteractiveAI kpis.json
+  survey_outcomes object  — from hmisurveys survey_outcomes.json
 Error if session is not yet COMPLETED.
 ```
 
@@ -253,6 +252,5 @@ pip install -r requirements.txt
 pytest tests/ -v
 ```
 
-Tests requiring a compiled proto are automatically skipped if `grpcio-tools` is
-not installed. Docker-dependent tests (container launch) are excluded from the
+Docker-dependent tests (container launch) are excluded from the
 unit test suite; run them as integration tests once OQ-4 and OQ-6 are resolved.

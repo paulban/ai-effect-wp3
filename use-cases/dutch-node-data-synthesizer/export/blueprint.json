@@ -1,7 +1,6 @@
 {
     "nodes": [
         {
-            "proto_uri": "microservice/data_synthesizer1.proto",
             "image": "ghcr.io/ai-effect/dutch-node-data-synthesizer:latest",
             "node_type": "DataSource",
             "container_name": "data_synthesizer1",

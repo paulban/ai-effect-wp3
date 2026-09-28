@@ -2,8 +2,8 @@
 
 Reclaims any slots left reserved by a previous process before serving, so an
 unclean restart does not permanently shrink the pool, then starts the HTTP
-control plane. There is no gRPC server and no background polling thread: the
-service is idle between requests, and results arrive by being posted to it.
+control plane. There is no background polling thread: the service is idle
+between requests, and results arrive by being posted to it.
 """
 
 import logging
