@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*:Zone.Identifier
+transcript_*.json
+networks/
+figures/
+export/
+export.zip
+output/
+# decide based on your use case during prototyping
+data/*

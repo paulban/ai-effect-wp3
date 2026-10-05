@@ -1,0 +1,24 @@
+{
+  "pipeline": {
+    "name": "Danish Node Configuration and Topology Pipeline",
+    "service_mapping": {
+      "config_assistant":  {"ip_address": "config-assistant",  "port": 8080},
+      "topology_generator": {"ip_address": "topology-generator", "port": 8080},
+      "draw_topology": {"ip_address": "draw-topology", "port": 8080}
+    },
+    "connections": [
+      {
+        "from_service": "config_assistant",
+        "from_method": "BuildRunConfig",
+        "to_service": "topology_generator",
+        "to_method": "GenerateTopology"
+      },
+      {
+        "from_service": "topology_generator",
+        "from_method": "GenerateTopology",
+        "to_service": "draw_topology",
+        "to_method": "RenderTopologies"
+      }
+    ]
+  }
+}

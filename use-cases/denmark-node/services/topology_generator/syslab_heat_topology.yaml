@@ -1,0 +1,127 @@
+# SYSLAB district heating switchboards
+# Transcribed from heatswitchboard_overview_2.svg
+#
+# Model
+# -----
+# switchboard : a physical switchboard cabinet (310-D, 310-T, 117-D, 716-D, 330-D).
+#               Every terminal in a switchboard can be valved onto any one of its headers.
+# header      : a busbar pair. role=circuit means it carries a forward (F, red) and a
+#               return (R, blue) rail and can therefore host a hydraulic circuit.
+#               role=bypass ("Header B") is the single black rail; it cannot host a
+#               circuit on its own, so it is excluded from circuit assignment.
+#               >>> CHECK THIS ASSUMPTION - see README notes.
+# terminal    : a column/row in the switchboard. role is used only to sanity-check the
+#               supply/load lists the user asks for:
+#                 source  - can inject heat
+#                 sink    - consumes heat
+#                 both    - can do either (campus coupling, storage)
+#                 passive - spare / not usable
+#                 pipe    - a pipe end (generated from the `pipes` section)
+# pipe        : links two switchboards. Carries F and R. If has_hx, the run can either
+#               pass through the heat exchanger (hydraulic separation) or bypass it.
+#               length_m is the length of ONE twin pipe in metres - forward and
+#               return share the casing, so the code counts 2 x length_m of steel.
+#               water_m3 is the water content of one twin pipe (both rails).
+#               Values from Ejlsborg, "Pipes in SYSLAB and their sensors",
+#               13 Nov 2025. Transmission runs are Logstor twin pipes, DN50 inner.
+#               Leave null where unmeasured - lengths are then reported as unknown
+#               rather than guessed.
+#               headers: {<switchboard>: [...]} restricts which headers that end
+#               of the pipe can be valved onto. At 310-T each line reaches only
+#               two of the three headers. Omit for unrestricted (all others).
+
+meta:
+  source: heatswitchboard_overview_2.svg
+  site: DTU Risø SYSLAB
+  notes: >
+    Pipe runs are labelled twice: the switchboard terminal name (e.g. "Pipe J1") and the
+    pipe-run tag on the drawing (e.g. A1.F / A1.R). Both are kept.
+
+switchboards:
+
+  310-D:
+    building: "310"
+    headers:
+      Header 1: {rails: [F, R], role: circuit}
+      Header 2: {rails: [F, R], role: circuit}
+      Header B: {rails: [B], role: bypass}
+    terminals:
+      - {name: Spare 1,          role: passive}
+      - {name: Spare 2,          role: passive}
+      - {name: Campus heating,   role: both}
+      - {name: Building 319,     role: sink}
+      - {name: Spare 3,          role: passive}
+      - {name: CHP,              role: source}
+      - {name: Gas boiler,       role: source}
+
+  310-T:
+    building: "310"
+    headers:
+      Header 1: {rails: [F, R], role: circuit}
+      Header 2: {rails: [F, R], role: circuit}
+      Header 3: {rails: [F, R], role: circuit}
+    terminals:
+      - {name: Solar,  role: source}
+      - {name: Diesel, headers: [Header 1, Header 2], role: source}
+      - {name: PTX A, headers: [Header 2, Header 3],  role: source}
+      - {name: PTX B, headers: [Header 1, Header 2],  role: source}
+
+  117-D:
+    building: "117"
+    headers:
+      Header 1: {rails: [F, R], role: circuit}
+      Header 2: {rails: [F, R], role: circuit}
+      Header B: {rails: [B], role: bypass}
+    terminals:
+      - {name: Booster heater, role: source}
+      - {name: Heatpump,       role: source}
+      - {name: Solar,          role: source}
+      - {name: Lab 117,        role: sink}
+      - {name: Campus heating, role: both}
+      - {name: Building 117,   role: sink}
+      - {name: Dumpload,       role: sink}
+
+  716-D:
+    building: "716"
+    headers:
+      Header 1: {rails: [F, R], role: circuit}
+      Header 2: {rails: [F, R], role: circuit}
+      Header B: {rails: [B], role: bypass}
+    terminals:
+      - {name: Dumpload,       role: sink}
+      - {name: Booster heater, role: source}
+      - {name: Heatpump,       role: source}
+      - {name: Campus heating, role: both}
+      - {name: Flexhouse 2,    role: sink}
+      - {name: Flexhouse 3,    role: sink}
+
+  330-D:
+    building: "330"
+    headers:
+      Header 1: {rails: [F, R], role: circuit}
+      Header 2: {rails: [F, R], role: circuit}
+      Header B: {rails: [B], role: bypass}
+    terminals:
+      - {name: Workshop,       role: sink}
+      - {name: Booster heater, role: source}
+      - {name: Building 330,   role: sink}
+      - {name: Demo lab 1,     role: sink}
+      - {name: Demo lab 2,     role: sink}
+      - {name: HP W2W input,   role: sink}      # evaporator side of the water/water HP
+      - {name: HP W2W output,  role: source}    # condenser side
+      - {name: HP A2W,         role: source}
+      - {name: Storage,        role: both}
+      - {name: Heat dumpload,  role: sink}
+      - {name: Campus heating, role: both}
+
+pipes:
+  J1: {ends: [310-D, 310-T], terminal: Pipe J1, run: A1, has_hx: true, hx_at: 310-D, length_m: 5, dn_mm: null, water_m3: null, headers: {310-T: [Header 1, Header 2]}}
+  J2: {ends: [310-D, 310-T], terminal: Pipe J2, run: A2, has_hx: true, hx_at: 310-D, length_m: 5, dn_mm: null, water_m3: null, headers: {310-T: [Header 1, Header 3]}}
+  C1: {ends: [310-T, 117-D], terminal: Pipe C1, run: C1, has_hx: true, hx_at: 117-D, length_m: 690.7, dn_mm: 50, water_m3: 3.121, headers: {310-T: [Header 1, Header 3]}}
+  C2: {ends: [310-T, 117-D], terminal: Pipe C2, run: C2, has_hx: true, hx_at: 117-D, length_m: 690.7, dn_mm: 50, water_m3: 3.121, headers: {310-T: [Header 2, Header 3]}}
+  E1: {ends: [310-T, 716-D], terminal: Pipe E1, run: E1, has_hx: true, hx_at: 716-D, length_m: 423.2, dn_mm: 50, water_m3: 2.117, headers: {310-T: [Header 1, Header 3]}}
+  E2: {ends: [310-T, 716-D], terminal: Pipe E2, run: E2, has_hx: true, hx_at: 716-D, length_m: 423.2, dn_mm: 50, water_m3: 2.117, headers: {310-T: [Header 2, Header 3]}}
+  K1: {ends: [310-T, 330-D], terminal: Pipe K1, run: K1, has_hx: true, hx_at: 330-D, length_m: 263.96, dn_mm: 50, water_m3: 1.276, headers: {310-T: [Header 1, Header 2]}}
+  # J1/J2 (runs A1/A2) are internal to building 310 and are not covered by the
+  # sensor report - measure separately.
+  K2: {ends: [310-T, 330-D], terminal: Pipe K2, run: K2, has_hx: true, hx_at: 330-D, length_m: 263.96, dn_mm: 50, water_m3: 1.276, headers: {310-T: [Header 2, Header 3]}}

@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package draw_topology;
+
+service DrawTopology {
+  rpc RenderTopologies(RenderTopologiesRequest) returns (RenderTopologiesResponse);
+}
+
+message RenderTopologiesRequest {
+  string workflow_id = 1;
+  repeated string network_signatures = 2;
+}
+
+message RenderedTopology {
+  int32 network_index = 1;
+  string signature = 2;
+  string uri = 3;
+  string format = 4;
+}
+
+message RenderTopologiesResponse {
+  int32 topology_count = 1;
+  repeated RenderedTopology drawings = 2;
+  bool valid = 3;
+  repeated string warnings = 4;
+}

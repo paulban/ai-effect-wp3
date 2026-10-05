@@ -1,0 +1,120 @@
+# Danish Node — test services for the AI-EFFECT WP3 orchestration platform.
+#
+# All four services join the external `ai-effect-services` network so that the
+# orchestrator workers can reach them by Docker DNS name on internal port 8080
+# (this is what dockerinfo.json declares). Create the network first:
+#
+#   docker network create ai-effect-services
+#
+# or just run ./start.sh, which does it for you.
+#
+# The compose project name must stay `denmark-node` for this pipeline so that the built images are
+# tagged `denmark-node-<service>:latest`, which is what the onboarding export
+# generator writes into blueprint.json.
+
+name: denmark-node
+
+services:
+  config-assistant:
+    build:
+      context: .
+      dockerfile: services/config_assistant/Dockerfile
+    container_name: dk-config-assistant
+    ports:
+      - "18101:8080"
+    environment:
+      - DATA_DIR=/data
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=qwen2.5:1.5b
+    volumes:
+      - node-data:/data
+    networks:
+      - ai-effect-services
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8080/health')\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: dk-ollama
+    volumes:
+      - ollama-models:/root/.ollama
+    networks:
+      - ai-effect-services
+    restart: unless-stopped
+
+  topology-generator:
+    build:
+      context: .
+      dockerfile: services/topology_generator/Dockerfile
+    container_name: dk-topology-generator
+    ports:
+      - "18102:8080"
+    environment:
+      - DATA_DIR=/data
+    volumes:
+      - node-data:/data
+    networks:
+      - ai-effect-services
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8080/health')\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  draw-topology:
+    build:
+      context: .
+      dockerfile: services/draw_topology/Dockerfile
+    container_name: dk-draw-topology
+    ports:
+      - "18103:8080"
+    environment:
+      - DATA_DIR=/data
+    volumes:
+      - node-data:/data
+    networks:
+      - ai-effect-services
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8080/health')\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  web-ui:
+    build:
+      context: .
+      dockerfile: services/web_ui/Dockerfile
+    container_name: dk-web-ui
+    ports:
+      - "18104:8080"
+    environment:
+      - DATA_DIR=/data
+      - ORCHESTRATOR_URL=http://host.docker.internal:18000
+      - USE_CASE_DIR=/workspace/use-cases/denmark-node
+    volumes:
+      - node-data:/data
+      - .:/workspace/use-cases/denmark-node:ro
+    networks:
+      - ai-effect-services
+    restart: unless-stopped
+
+volumes:
+  # Data plane: services exchange payloads as `file` DataReferences on this
+  # shared volume. The orchestrator only forwards the reference, never the data.
+  node-data:
+    name: denmark-node-data
+  ollama-models:
+    name: denmark-node-ollama-models
+
+networks:
+  ai-effect-services:
+    name: ai-effect-services
+    external: true

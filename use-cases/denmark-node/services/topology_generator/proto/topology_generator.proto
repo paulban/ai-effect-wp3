@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package topology_generator;
+
+// District-heating topology generator for the Danish Node (DTU) workflow.
+// Consumes a normalized SYSLAB run configuration and returns feasible networks.
+
+service TopologyGenerator {
+  // Generate feasible district-heating networks from a run configuration.
+  rpc GenerateTopology(GenerateTopologyRequest) returns (GenerateTopologyResponse);
+
+  // Validate a generated topology against connectivity constraints.
+  rpc ValidateTopology(ValidateTopologyRequest) returns (ValidateTopologyResponse);
+}
+
+message GenerateTopologyRequest {
+  string run_name = 1;
+  repeated string supplies = 2;
+  repeated string loads = 3;
+  bool allow_hx = 4;
+  bool allow_bypass = 5;
+}
+
+message PipeSetting {
+  string pipe_id = 1;
+  string mode = 2;              // "hx" | "bypass"
+}
+
+message Topology {
+  string signature = 1;
+  repeated string supplies = 2;
+  repeated string loads = 3;
+  repeated PipeSetting pipes = 4;
+}
+
+message GenerateTopologyResponse {
+  string run_name = 1;
+  repeated Topology topologies = 2;
+}
+
+message ValidateTopologyRequest {
+  Topology topology = 1;
+}
+
+message ValidateTopologyResponse {
+  bool valid = 1;
+  repeated string violations = 2;
+}
