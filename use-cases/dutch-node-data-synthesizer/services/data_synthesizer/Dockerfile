@@ -23,7 +23,8 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY common/ /app/common/
 
 COPY dutch-node-data-synthesizer/services/data_synthesizer/synth/ /app/synth/
-COPY dutch-node-data-synthesizer/services/data_synthesizer/main.py /app/main.py
+# COPY dutch-node-data-synthesizer/services/data_synthesizer/main.py /app/main.py
+COPY dutch-node-data-synthesizer/services/data_synthesizer/service.py /app/service.py
 
 ENV HOST=0.0.0.0
 ENV PORT=8080
