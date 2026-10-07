@@ -18,9 +18,11 @@
 services:
   synthetic-data:
     build:
-      context: ..
-      dockerfile: dutch-node-data-synthesizer/services/data_synthesizer/Dockerfile
-    image: ghcr.io/ai-effect/dutch-node-data-synthesizer:latest
+      context: ./services/data_synthesizer/
+      additional_contexts:
+        - common=../common
+      dockerfile: Dockerfile
+    # image: ghcr.io/ai-effect/dutch-node-data-synthesizer:latest
     container_name: synthetic-data
     restart: unless-stopped
     environment:
