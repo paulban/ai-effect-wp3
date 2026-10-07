@@ -1,12 +1,10 @@
-# Synthetic power grid service.
 #
-# The build context is use-cases/, so the shared control-plane package can be
-# copied in alongside this service's own code. The service imports the shared
-# package as `common` and its own modules as `synth`.
+# AI-EFFECT - Synthetic power grid service.
 #
-# No published port and no gRPC server: results are served as artifacts over
-# HTTP at /control/data, reachable only from the orchestrator's workers on the
-# shared Docker network.
+# This image, when built, will contain all necessary code
+# and packages to run the service.
+#
+
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -19,7 +17,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Shared control plane: dispatch, authentication, artifact endpoint, job runner.
+# When building this image without the aid of Docker compose,
+# be sure to add the --build-context parameter as follows:
+#
+# --build-context=common=use-cases/common
+#
+# This assumes you are building the image from the root of
+# this repository. Adjust the path based on your current working directory.
 COPY --from=common / ./common/
 
 # The synthesizer still builds protobuf config objects internally, so its proto
@@ -31,6 +35,7 @@ COPY --from=common / ./common/
 # never exercised — and was wrong. Stubs are still pre-compiled below so startup
 # does no work, but the runtime fallback now resolves correctly too.
 # COPY dutch-node-data-synthesizer/services/data_synthesizer/proto/ /app/proto/
+
 COPY synth/ ./synth
 
 # RUN mkdir -p /app/synth/_generated && \
