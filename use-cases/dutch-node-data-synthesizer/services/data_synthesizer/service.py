@@ -7,6 +7,7 @@ For long-running operations, use task_manager to track progress.
 """
 
 import base64
+import pickle
 import json
 import logging
 import os
@@ -124,7 +125,7 @@ def _json_default(obj):
 
 # //TODO Check if this method can become restricted since we don't need to call
 #    it directly but it's only called by execute_ConfigureAndSynthesize()
-def execute_ConfigureGrid(request: ExecuteRequest) -> ExecuteResponse:
+def _configure_grid(params: dict) -> dict:
     """Configure grid parameters for the Chung-Lu-Chain synthesizer.
 
     Input (inline JSON, optional - defaults used if not provided):
@@ -147,11 +148,6 @@ def execute_ConfigureGrid(request: ExecuteRequest) -> ExecuteResponse:
         GridSynthesisConfig payload served by this node.
     """
 
-    # Parse input parameters or use defaults
-    params = {}
-    if request.inputs:
-        params = _decode_inline_input(request.inputs[0])
-
     level_specs = params.get("level_specs", DEFAULT_LEVEL_SPECS)
     connection_specs_raw = params.get("connection_specs", DEFAULT_CONNECTION_SPECS)
     seed = params.get("seed", DEFAULT_SEED)
@@ -166,6 +162,7 @@ def execute_ConfigureGrid(request: ExecuteRequest) -> ExecuteResponse:
         logger.info(f"Configuring grid: {len(level_specs)} levels, seed={seed}")
         configurator = InputConfigurator(seed=seed)
         config_params = configurator.create_params(level_specs, connection_specs)
+        print(f"config_params@execute_ConfigureGrid():{config_params}")
 
         # Serialize configuration (convert numpy arrays to lists for JSON)
         config_output = {
@@ -195,13 +192,6 @@ def execute_ConfigureGrid(request: ExecuteRequest) -> ExecuteResponse:
             },
         }
 
-        # The configuration is an intermediate step, consumed in this same
-        # process by the synthesis that follows it. It is deliberately not
-        # stored as a task artifact: the artifact a caller receives is the
-        # synthesized grid, and publishing the config under the same task id
-        # would overwrite it.
-        config_json = json.dumps(config_output, default=_json_default)
-
         logger.info(f"Grid configuration complete: {len(level_specs)} levels")
 
         grpc_host = os.environ.get("GRPC_HOST", "synthetic-data")
@@ -212,18 +202,13 @@ def execute_ConfigureGrid(request: ExecuteRequest) -> ExecuteResponse:
         # reference made the handoff a network round trip to itself — and broke
         # outright once the unused gRPC server was removed. Inline keeps the
         # config where its only consumer already is.
-        return ExecuteResponse(
-            status="complete",
-            output=DataReference(
-                protocol="inline",
-                uri=base64.b64encode(config_json.encode("utf-8")).decode("ascii"),
-                format="json",
-            ),
-        )
-
+        return config_output
+    except ValueError as evr:
+	    logger.exception("ConfigureGrid failed with ValueError exception.")
+	    return ExecuteResponse(status="failed", error=str(f"{evr} - ValueError Exception was thrown."))
     except Exception as e:
         logger.exception("ConfigureGrid failed")
-        return ExecuteResponse(status="failed", error=str(e))
+        return ExecuteResponse(status="failed", error=str(f"{e} - Exception not ValueError"))
 
 
 def execute_ConfigureAndSynthesize(request: ExecuteRequest) -> ExecuteResponse:
@@ -403,16 +388,20 @@ def _synthesize_grid(
                 "Expected 'grpc', 'http', 'https', or 'inline'."),
             )
 
+        config = _configure_grid(config)
+
         progress=+int(10)
         manager.update_progress(task_id, progress)
 
         seed = config.get("seed", DEFAULT_SEED)
         loading_level = config.get("loading_level", DEFAULT_LOADING_LEVEL)
         ref_sys_id = config.get("ref_sys_id", DEFAULT_REF_SYS_ID)
+        print(config)
         degrees_by_level = config["degrees_by_level"]
         diameters_by_level = config["diameters_by_level"]
 
         progress = +int(10)
+        manager.update_progress(task_id, progress)
 
         # Reconstruct transformer_degrees with tuple keys
         transformer_degrees = {}
@@ -423,6 +412,7 @@ def _synthesize_grid(
             transformer_degrees[key] = v
 
         progress = +int(10)
+        manager.update_progress(task_id, progress)
 
         # 1. Generate base topology
         logger.info(f"Generating grid topology: seed={seed}")
@@ -438,12 +428,14 @@ def _synthesize_grid(
         )
 
         progress = +int(10)
+        manager.update_progress(task_id, progress)
 
         # 2. Apply physics pipeline
         logger.info("Applying bus type allocation...")
         BusTypeAllocator(grid).allocate(max_iter=20)
 
         progress = +int(10)
+        manager.update_progress(task_id, progress)
 
         logger.info(
             f"Applying capacity allocation (ref_sys_id={ref_sys_id})..."
@@ -451,6 +443,7 @@ def _synthesize_grid(
         CapacityAllocator(grid, ref_sys_id=ref_sys_id).allocate()
 
         progress = +int(10)
+        manager.update_progress(task_id, progress)
 
         logger.info(
             f"Applying load allocation (loading_level={loading_level})..."
@@ -460,16 +453,19 @@ def _synthesize_grid(
             )
 
         progress = +int(10)
+        manager.update_progress(task_id, progress)
 
         logger.info("Dispatching generation...")
         GenerationDispatcher(grid, ref_sys_id=ref_sys_id).dispatch()
 
         progress = +int(10)
+        manager.update_progress(task_id, progress)
 
         logger.info("Allocating transmission lines...")
         TransmissionLineAllocator(grid, ref_sys_id=ref_sys_id).allocate()
 
         progress = +int(10)
+        manager.update_progress(task_id, progress)
 
         # 3. Serialize the enriched grid
         graph_data = json_graph.node_link_data(grid)
@@ -487,6 +483,7 @@ def _synthesize_grid(
         }
 
         progress = +int(10)
+        manager.update_progress(task_id, progress)
 
         # pandapower is the interchange format a consumer of this grid actually
         # wants, so it travels in the stored artifact rather than only inside a
@@ -500,20 +497,28 @@ def _synthesize_grid(
         )
 
         # Complete with output
+        # We reach this point
+        # print(f"output protocol: {protocol}")
+
+        os.mkdir("./results")
+        file_based_output_path = Path(f"./results/{task_id}.json")
+        with open(file_based_output_path, 'w') as f:
+            json.dump(output, f)
+
         manager.complete_task(
             task_id,
             {
                 "protocol": protocol,
-                "uri": "folder path",
-                # "uri": f"s3://bucket/output/{task_id}.json",
+                 "uri" : base64.b64encode(pickle.dumps(file_based_output_path)),
                 "format": "json",
             },
         )
 
     except Exception as e:
-        manager.fail_task(task_id, str(e))
+        manager.fail_task(task_id, str(f"{e} - Failed at _synthesize_grid() - degrees_by_level={degrees_by_level}"))
 
 
 if __name__ == "__main__":
     import sys
     run(sys.modules[__name__])
+    # execute_ConfigureAndSynthesize(ExecuteRequest())
