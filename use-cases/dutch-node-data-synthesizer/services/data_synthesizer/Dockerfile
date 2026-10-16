@@ -36,7 +36,7 @@ COPY --from=common / ./common/
 # does no work, but the runtime fallback now resolves correctly too.
 # COPY dutch-node-data-synthesizer/services/data_synthesizer/proto/ /app/proto/
 
-COPY synth/ ./synth
+# COPY synth/ ./synth
 
 # RUN mkdir -p /app/synth/_generated && \
 #     python -m grpc_tools.protoc \
@@ -56,9 +56,9 @@ ENV ARTIFACT_DIR=/artifacts
 # service would starve the live human-AI sessions sharing the host.
 ENV MAX_CONCURRENT_JOBS=1
 
-EXPOSE 8080
+# EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+# HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+#     CMD curl -f http://localhost:8080/health || exit 1
 
 CMD ["python", "service.py"]
