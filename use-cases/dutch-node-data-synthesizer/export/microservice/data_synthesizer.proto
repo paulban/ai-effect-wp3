@@ -1,0 +1,12 @@
+syntax = "proto3";
+package data_synthesizer;
+
+service DutchNodeDataSynthesizer {
+  rpc ConfigureAndSynthesize(ConfigureAndSynthesizeRequest) returns (ConfigureAndSynthesizeResponse);
+}
+
+message ConfigureAndSynthesizeRequest {
+}
+
+message ConfigureAndSynthesizeResponse{
+}
