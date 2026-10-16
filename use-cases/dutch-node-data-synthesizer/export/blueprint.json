@@ -1,16 +1,17 @@
 {
     "nodes": [
         {
+            "proto_uri": "microservice/data_synthesizer.proto",
             "image": "ghcr.io/ai-effect/dutch-node-data-synthesizer:latest",
             "node_type": "DataSource",
-            "container_name": "data_synthesizer1",
+            "container_name": "data_synthesizer",
             "operation_signature_list": [
                 {
                     "connected_to": [],
                     "operation_signature": {
                         "operation_name": "ConfigureAndSynthesize",
-                        "output_message_name": "GetGridDataResponse",
-                        "input_message_name": "GridSynthesisRequest",
+                        "output_message_name": "ConfigureAndSynthesizeResponse",
+                        "input_message_name": "ConfigureAndSynthesizeRequest",
                         "output_message_stream": false,
                         "input_message_stream": false
                     }
@@ -19,8 +20,8 @@
         }
     ],
     "name": "Dutch-Node-Data-Synthesizer",
-    "pipeline_id": "2d4f69e9-43f9-4970-9d70-55829bda00ad",
-    "creation_date": "2026-08-03 16:39:16.742663",
+    "pipeline_id": "fb89d4a5-467b-4055-b27c-3e228380f5e0",
+    "creation_date": "2026-10-16 11:00:35.913474",
     "type": "pipeline-topology/v2",
     "version": "2.0"
 }
