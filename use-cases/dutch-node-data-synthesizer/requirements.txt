@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+pydantic
+httpx
+grpcio
+grpcio-tools
+protobuf
+networkx
+numpy
+scipy
+pandas
+matplotlib
+pandapower
+# Install the synthesizer package directly from GitHub
+git+https://github.com/TU-Delft-AI-Energy-Lab/grid-synthesizer.git
