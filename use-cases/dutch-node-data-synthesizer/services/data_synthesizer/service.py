@@ -500,7 +500,7 @@ def _synthesize_grid(
         # We reach this point
         # print(f"output protocol: {protocol}")
 
-        os.mkdir("./results")
+        # os.mkdir("./results") <-- Is created as a volume
         file_based_output_path = Path(f"./results/{task_id}.json")
         with open(file_based_output_path, 'w') as f:
             json.dump(output, f)

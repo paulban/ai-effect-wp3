@@ -47,6 +47,7 @@ COPY --from=common / ./common/
 
 COPY handler.py ./handler.py
 COPY service.py ./service.py
+COPY data_api.py ./data_api.py
 
 # ENV HOST=0.0.0.0
 # ENV PORT=8080
