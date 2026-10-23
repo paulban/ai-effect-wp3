@@ -577,16 +577,20 @@ echo
 "$PYTHON_BIN" - "$RESULT_FILE" <<'PY'
 import json, pathlib, sys
 
+# The result is a pandapower JSON file; the synthesis metadata sits inside it
+# at net["synthesis_metadata"], readable here without pandapower installed.
 grid = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+meta = grid.get("_object", {}).get("synthesis_metadata", {})
 
 print("  Synthesized grid:")
-print(f"    status:       {grid.get('status')}")
-print(f"    nodes:        {grid.get('nodes')}")
-print(f"    edges:        {grid.get('edges')}")
-print(f"    seed:         {grid.get('seed')}")
-print(f"    loading:      {grid.get('loading_level')}")
-print(f"    grid2op env:  {grid.get('benchmark_env_name')}")
-print(f"    pandapower:   {'present' if grid.get('pandapower') else 'absent'}")
+print(f"    name:         {meta.get('synthetic_grid_name')}")
+print(f"    buses:        {meta.get('buses')}")
+print(f"    lines:        {meta.get('lines')}")
+print(f"    transformers: {meta.get('transformers')}")
+print(f"    seed:         {meta.get('seed')}")
+print(f"    loading:      {meta.get('loading_level')}")
+print(f"    power flow:   {'converged' if meta.get('power_flow_converged') else 'not converged'}")
+print(f"    open with:    pandapower.from_json({sys.argv[1]!r})")
 PY
 
 echo

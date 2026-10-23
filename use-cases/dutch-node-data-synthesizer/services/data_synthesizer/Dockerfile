@@ -26,28 +26,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # this repository. Adjust the path based on your current working directory.
 COPY --from=common / ./common/
 
-# The synthesizer still builds protobuf config objects internally, so its proto
-# and the stub generation stay.
-#
-# The proto lands at /app/proto because proto_runtime.ensure_generated() derives
-# the directory as <package>/../proto. The previous Dockerfile put it elsewhere
-# and pre-compiled the stubs at build time, which meant that runtime path was
-# never exercised — and was wrong. Stubs are still pre-compiled below so startup
-# does no work, but the runtime fallback now resolves correctly too.
-# COPY dutch-node-data-synthesizer/services/data_synthesizer/proto/ /app/proto/
-
-# COPY synth/ ./synth
-
-# RUN mkdir -p /app/synth/_generated && \
-#     python -m grpc_tools.protoc \
-#       -I/app/proto \
-#       --python_out=/app/synth/_generated \
-#       --grpc_python_out=/app/synth/_generated \
-#       /app/proto/data_synthesizer.proto
-
 COPY handler.py ./handler.py
 COPY service.py ./service.py
-COPY data_api.py ./data_api.py
 
 # ENV HOST=0.0.0.0
 # ENV PORT=8080

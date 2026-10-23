@@ -41,8 +41,6 @@ services:
       # Loopback only. This is a developer affordance, not a way to reach
       # the service from the network — the orchestrator does not use it.
       - "127.0.0.1:${SYNTHESIZER_HOST_PORT:-8003}:8080"
-      # This port is used to retrieve the data
-      - "127.0.0.1:8004:8081"
     volumes:
       # Results outlive the container so a restart mid-study does not lose a
       # completed benchmark.

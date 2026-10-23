@@ -1,8 +1,10 @@
 # Dutch Node — Synthetic Power Grid
 
-Generates a synthetic transmission grid with the Chung-Lu-Chain method and
-returns it as a fetchable artifact: a node-link graph plus the same network as a
-pandapower snapshot, which is the form a consumer actually wants.
+Generates a synthetic transmission grid with the Chung-Lu-Chain method, using
+the [powergrid_synth](https://github.com/TU-Delft-AI-Energy-Lab/grid-synthesizer)
+package, and returns it as a single pandapower JSON file that
+`pandapower.from_json()` opens directly. The synthesis metadata travels inside
+that file.
 
 **Spec:** `.claude/specs/dutch-node-target-architecture-spec.md` (FR-24 to FR-28)
 
@@ -13,40 +15,34 @@ pandapower snapshot, which is the form a consumer actually wants.
 ```
 orchestrator ──POST /control/execute──▶ synthetic-data:8080
                     ConfigureAndSynthesize      │
-                                                │ task id, immediately (FR-24)
-                                      configure the grid (synchronous —
-                                      a bad request fails now, not in a
-                                      minute's time)
+                                                │ job id, immediately (FR-24)
+                                      read and normalise the parameters
+                                      (synchronous — a bad request fails
+                                      now, not in a minute's time)
                                                 │
-                                      generate on a background thread:
+                                      on a background thread, powergrid_synth's
+                                      synthesize(mode="synthetic"):
                                       topology → bus types → capacity →
-                                      loads → dispatch → transmission
+                                      loads → dispatch → transmission →
+                                      pandapower JSON export
                                                 │
               ◀── /control/status, progress ────┤
               ◀── /control/output ──────────────┘
-                  DataReference: http, the artifact URL
+                  DataReference: http, the artifact URL (FR-05, FR-25)
 
-caller ──GET http://localhost:8003/control/data/{job_id}──▶ the grid
+caller ──GET {SELF_URL}/control/data/{job_id}──▶ the pandapower JSON
 ```
 
-The two logical steps — configure, then synthesize — are backed by one process,
-so the exported package declares the single operation `ConfigureAndSynthesize`.
-The configuration is passed to the synthesis inline rather than through a
-reference to this service's own endpoint, because both steps run here.
+The job is run by `BatchJobRunner` from `use-cases/common/batch_jobs.py`. It
+caps simultaneous syntheses (FR-26; a submission beyond the cap fails
+immediately), keys each job by `<workflow_id>.<task_id>` so runs do not
+overwrite each other, and stores the result in the artifact store on the
+`synthesizer_artifacts` volume. A copy is also written to
+`results/<job_id>.json`, bind-mounted from the container to this directory.
 
-## What is deliberately absent
-
-- **No dependency on the node's proxy.** The service is reachable two ways: on
-  the `ai-effect-services` network at the address `export/dockerinfo.json`
-  names, `synthetic-data:8080`, which is the path the orchestrator's workers
-  take; and on `http://localhost:8003`, published on loopback for this machine.
-  See "Running it" — the host port is a development convenience that FR-19 and
-  FR-27 would not permit in a deployment.
-- **No gRPC or protobuf.** The service runs standalone, not as a pipeline
-  node, so it has no proto contract. The results data plane is the HTTP
-  artifact endpoint.
-- **No inline execution.** Synthesis runs on a background thread so the
-  orchestrator's request is not held open for its duration.
+The service declares the single operation `ConfigureAndSynthesize`. Every
+function named `execute_<Method>` in `service.py` is exposed as an operation,
+so helpers there are private (leading underscore).
 
 ## Running it
 
@@ -59,35 +55,18 @@ cd ../use-cases/dutch-node-data-synthesizer && docker compose up -d --build
 
 `scripts/start.sh` and `scripts/stop.sh` wrap those two lines.
 
-### How the service is reached
-
-Two ways, and the distinction matters when something breaks.
-
-**The orchestrator's workers** dial it on the `ai-effect-services` network at the
-address `export/dockerinfo.json` names, `synthetic-data:8080`. No host port is
-involved. This is the path all real work takes, and it is what `run_workflow.sh`
-probes from inside a worker container — a probe from the host would not exercise
-it.
-
-**This machine** reaches it at `http://localhost:8003`, published on loopback by
-`docker-compose.yml`. Result references point here, so a finished grid is
-fetchable with nothing else running.
-
-That host port is a development convenience and it contradicts FR-19 and FR-27,
-which exist so the node exposes exactly one port however many services it grows.
-For a real deployment, put the proxy back in front:
-
-```bash
-SYNTHESIZER_SELF_URL=https://node.example.org/svc/synth docker compose up -d
-```
-
-and drop the `ports:` block. Nothing else changes — the orchestrator never used
-the host port.
+The orchestrator's workers dial the service on the `ai-effect-services` network
+at the address `export/dockerinfo.json` names, `synthetic-data:8080`. The
+compose file also publishes it on loopback at `http://localhost:8003`; result
+references point there by default, so a finished grid is fetchable from this
+machine. That host port is a development convenience that FR-19 and FR-27 do
+not permit in a deployment, where `SYNTHESIZER_SELF_URL` names the node's proxy
+route instead.
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `SYNTHESIZER_HOST_PORT` | `8003` | Loopback port the service is published on |
-| `SYNTHESIZER_SELF_URL` | `http://localhost:8003` | Base URL result references are built from |
+| `SYNTHESIZER_SELF_URL` | `http://localhost:8003` | Base URL result references are built from; set it to the proxy route in a deployment |
 | `SERVICE_API_KEY` | unset | Bearer token on `/control/*`; open if unset |
 | `SYNTHESIZER_MAX_CONCURRENT_JOBS` | `1` | Simultaneous syntheses |
 | `SYNTHESIZER_CPU_LIMIT` / `SYNTHESIZER_MEMORY_LIMIT` | `2.0` / `4G` | Resource ceiling |
@@ -98,24 +77,24 @@ the host port.
 SERVICE_API_KEY=<same key> ./run_workflow.sh
 ```
 
-The script submits the exported blueprint, waits for the workflow, and fetches
-the artifact the result reference points at — the full path a vendor walks. It
-checks first that the orchestrator is up, that its workers are running, and that
-the service answers at its `dockerinfo.json` address *from inside a worker*,
-because that is the call that has to succeed and a probe from the host would
-prove nothing.
+The script submits the exported blueprint, waits for the workflow, fetches the
+grid the result reference points at into `$OUTPUT_DIR/<workflow_id>.json`, and
+prints a summary from its metadata. It checks first that the orchestrator is up, that its workers are
+running, and that the service answers at its `dockerinfo.json` address *from
+inside a worker*, because that is the call that has to succeed.
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `ORCHESTRATOR_URL` | `http://localhost:18000` | Where to submit |
 | `ORCHESTRATOR_API_KEY` | unset | Bearer token on the orchestrator API |
 | `SERVICE_API_KEY` | unset | Forwarded to the service as `services_api_key`. Must match the container's, or the worker's call is rejected with 401 |
-| `OUTPUT_DIR` | `./results` | Where the fetched grid is written |
+| `OUTPUT_DIR` | `./results` | Where the grid is written |
 
 ## Input payload
 
-Inline base64 JSON. Every field is optional; the service's defaults produce a
-three-level, 180-node grid.
+Inline base64 JSON (or an `http(s)` reference returning it). Every field is
+optional; the defaults produce a three-level, 180-node grid before the largest
+connected component is kept.
 
 ```json
 {
@@ -130,51 +109,66 @@ three-level, 180-node grid.
   },
   "seed": 42,
   "loading_level": "M",
-  "ref_sys_id": 1
+  "ref_sys_id": 1,
+  "synthetic_grid_name": "synthetic-grid-v0"
 }
 ```
 
-`loading_level` is `L`, `M` or `H`. Keys the service does not recognise are
-ignored silently, so a misspelled field yields a default grid rather than an
-error — check the run's printed parameters against what you meant to send.
+`loading_level` is `L`, `M` or `H`. `synthetic_grid_name` becomes `net.name`.
+Keys the service does not recognise are ignored silently, so a misspelled field
+yields a default grid rather than an error.
 
 ## Output shape
 
-JSON, served at `/control/data/{job_id}`:
+A pandapower network in JSON form, as `pp.to_json()` writes it, served at
+`/control/data/{job_id}`:
+
+```python
+import pandapower as pp
+net = pp.from_json("results/<job_id>.json")
+net.name                    # the synthetic grid name
+net["synthesis_metadata"]   # see below
+```
+
+The network is produced by powergrid_synth's own export (`GridExporter`, which
+uses `nx_to_pandapower`). The synthesis metadata is at
+`net["synthesis_metadata"]` (in the raw JSON: `_object.synthesis_metadata`):
 
 | Field | Contents |
 |---|---|
-| `status` | `success` |
-| `nodes`, `edges` | Counts of the generated topology |
+| `synthetic_grid_name` | Name of the grid, also `net.name` (default `synthetic-grid-v0`) |
 | `seed`, `loading_level`, `ref_sys_id` | Echoed configuration |
-| `benchmark_env_name` | Name of the grid2op environment this grid stands for |
-| `graph_data` | networkx node-link form, with the physics attributes attached |
-| `pandapower` | The same network via `pp.to_json()`, ready for `pp.from_json()` |
+| `level_specs`, `connection_specs` | Echoed topology parameters |
+| `voltage_by_level_kv` | Nominal voltage assigned to each hierarchy level |
+| `buses`, `lines`, `transformers` | Element counts of the network |
+| `powergrid_synth_version`, `pandapower_version` | Versions that produced the file |
+| `power_flow_converged` | Whether an AC power flow converged on the result |
 
-The result reference's `format` is `json` — the encoding, which is what the
-orchestrator validates — and the logical name `GridData` travels in the
-reference's `metadata.data_format`.
+Open the file with a pandapower version close to `pandapower_version`; much
+older versions load it but fail in `runpp`.
+
+The result reference's `format` is `json`, the encoding the orchestrator
+validates; the logical name `GridData` travels in `metadata.data_format`.
 
 ## Key files
 
-- `main.py` — entrypoint; builds the job runner and starts the shared app
-- `synth/synth_operations.py` — `ConfigureAndSynthesize` and the generation
-  pipeline, plus the networkx → pandapower conversion
-- `../../export/{blueprint,dockerinfo}.json` — orchestrator workflow metadata.
-  Maintained by hand: `scripts/onboarding-export-generator.py` derives
-  operations from a proto, which this service no longer has
+- `service.py` — the service: `ConfigureAndSynthesize`, parameter handling,
+  the call into powergrid_synth, and the batch job submission
+- `handler.py` — re-exports the shared control plane from `use-cases/common/`
+- `proto/data_synthesizer.proto` — declares the `ConfigureAndSynthesize`
+  operation for the onboarding export. The service itself speaks HTTP, not gRPC
+- `../../export/` — orchestrator workflow metadata, generated with
+  `python scripts/onboarding-export-generator.py use-cases/dutch-node-data-synthesizer <out>`
+  from the proto and `../../connections.json`. The generator names the container
+  `data_synthesizer1`; the committed export has it renamed to `data_synthesizer`
 - `run_workflow.sh` — end-to-end orchestration run script
-- `test_pipeline.py` — a manual two-step smoke script against a directly
-  reachable service. Its hardcoded `http://localhost:8080` still needs changing
-  to `http://localhost:8003` to match the published port
 
 ## Tests
 
-The generation pipeline has no automated tests of its own. The shared job
-lifecycle it depends on — background execution, progress, capacity, artifact
-references, and the per-workflow keying that stops two runs overwriting each
-other — is covered by the benchmark service's suite, which exercises the same
-`use-cases/common/` code:
+The service has no automated tests of its own. The shared job lifecycle it
+depends on (background execution, progress, capacity, artifact references,
+per-workflow job ids) is covered by the benchmark service's suite, which
+exercises the same `use-cases/common/` code:
 
 ```bash
 python -m pytest use-cases/dutch-node-benchmarking/services/benchmarking/tests/ -q
