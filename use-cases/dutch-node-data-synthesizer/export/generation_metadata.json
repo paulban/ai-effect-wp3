@@ -5,7 +5,7 @@
     "services": [
         {
             "service_name": "synthetic-data",
-            "container_name": "data_synthesizer",
+            "container_name": "data_synthesizer1",
             "image_name": "ghcr.io/ai-effect/dutch-node-data-synthesizer:latest"
         }
     ]
