@@ -2,11 +2,11 @@
 #
 # The build context is use-cases/, so the shared control-plane package can be
 # copied in alongside this service's own code. The service imports the shared
-# package as `common` and its own modules as `benchmark`.
+# package as `common`, through handler.py like the onboarding templates.
 #
-# No published port: results are served as artifacts over
-# HTTP at /control/data, reachable only from the orchestrator's workers on the
-# shared Docker network.
+# Results are served as artifacts over HTTP at /control/data. The orchestrator's
+# workers reach the service on the shared Docker network; docker-compose.yml
+# additionally publishes a loopback port for fetching results on this machine.
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -18,13 +18,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY dutch-node-benchmarking/services/benchmarking/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
+# grid2op's EnvRecorder needs pyarrow, and pyarrow 20+ only imports with
+# NumPy 2, while pypowsybl2grid pins numpy==1.26.4. pyarrow 19.0.1 is the
+# newest that works with NumPy 1.x, so it replaces the version grid2evaluate
+# declares (>=20); pip reports that conflict, and it is deliberate.
+RUN pip install --no-cache-dir --no-deps pyarrow==19.0.1
 
 # Shared control plane: dispatch, authentication, artifact endpoint, job runner.
 COPY common/ /app/common/
 
-COPY dutch-node-benchmarking/services/benchmarking/benchmark/ /app/benchmark/
+COPY dutch-node-benchmarking/services/benchmarking/handler.py /app/handler.py
+COPY dutch-node-benchmarking/services/benchmarking/service.py /app/service.py
+
+# Algorithms and scenarios are selected by name from these directories. The
+# image ships the default algorithm; docker-compose.yml bind-mounts both
+# directories so new ones can be dumped in without a rebuild.
 COPY dutch-node-benchmarking/services/benchmarking/algorithms/ /app/algorithms/
-COPY dutch-node-benchmarking/services/benchmarking/main.py /app/main.py
+RUN mkdir -p /app/scenarios
+ENV ALGORITHM_DIRECTORY=/app/algorithms
+ENV SCENARIO_DIRECTORY=/app/scenarios
 
 ENV HOST=0.0.0.0
 ENV PORT=8080
@@ -39,4 +51,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
-CMD ["python", "main.py"]
+CMD ["python", "service.py"]

@@ -29,8 +29,11 @@
 #   SERVICE_API_KEY       Bearer token on the service's /control/*. Must match
 #                         what the service container was started with, or the
 #                         worker's call is rejected with 401
-#   ALGORITHM             Algorithm source to benchmark. Default
-#                         algorithms/algorithm_template.py
+#   ALGORITHM             Algorithm file name in algorithms/ (bind-mounted
+#                         into the service). Default algorithm_template.py
+#   SCENARIO              Directory name in scenarios/ or a grid2op built-in
+#                         environment. Default l2rpn_case14_sandbox
+#   TIME_SERIES_IDS       Comma-separated time series to run. Default 0
 #   MAX_STEPS             Steps per episode. Default 100
 #   KPIS                  Comma-separated KPI names. Default is all three
 #                         grid2benchmark computes; see BENCHMARK_KPIS below
@@ -44,14 +47,13 @@ EXPORT_DIR="$SCRIPT_DIR/../../export"
 ORCHESTRATOR_URL="${ORCHESTRATOR_URL:-http://localhost:18000}"
 ORCHESTRATOR_API_KEY="${ORCHESTRATOR_API_KEY:-}"
 SERVICE_API_KEY="${SERVICE_API_KEY:-}"
-ALGORITHM="${ALGORITHM:-$SCRIPT_DIR/algorithms/algorithm_template.py}"
+ALGORITHM="${ALGORITHM:-algorithm_template.py}"
+SCENARIO="${SCENARIO:-l2rpn_case14_sandbox}"
+TIME_SERIES_IDS="${TIME_SERIES_IDS:-0}"
 MAX_STEPS="${MAX_STEPS:-100}"
 
 # grid2benchmark validates KPI names against its own vocabulary and rejects the
-# whole run on an unknown one. These are the three it computes. `survival`,
-# `violations` and `latency` — which this script used to ask for — are the names
-# of the *fallback* metrics the service derives itself when grid2benchmark
-# returns none; they are not accepted as a request.
+# whole run on an unknown one. These are the three it computes.
 BENCHMARK_KPIS="${KPIS:-carbon_intensity,operation_score,topological_action_complexity}"
 OUTPUT_DIR="${OUTPUT_DIR:-$SCRIPT_DIR/results}"
 
@@ -188,8 +190,10 @@ for required_file in "$EXPORT_DIR/blueprint.json" "$EXPORT_DIR/dockerinfo.json";
     fi
 done
 
-if [ ! -f "$ALGORITHM" ]; then
-    echo "Algorithm source not found: $ALGORITHM" >&2
+# The service reads algorithms from its bind-mounted algorithms/ directory,
+# which is this one, so a name missing here would be rejected there too.
+if [ ! -f "$SCRIPT_DIR/algorithms/$ALGORITHM" ]; then
+    echo "Algorithm not found: $SCRIPT_DIR/algorithms/$ALGORITHM" >&2
     exit 1
 fi
 
@@ -388,32 +392,29 @@ echo
 # ---------------------------------------------------------------------------
 # Step 1 — the input
 #
-# The scenario is preset configuration, not data from the synthesizer: this
-# service is standalone. What the caller supplies is the algorithm, as source,
-# which the service loads and checks for build_agent(env, context).
+# The service is standalone: it does not consume data from the synthesizer.
+# The request names an algorithm file and a scenario the operator has placed on
+# the node; the service loads the algorithm and checks for build_agent(env, context).
 # ---------------------------------------------------------------------------
 
 echo "Step 1: benchmark specification"
 
-INPUT_B64=$("$PYTHON_BIN" - "$ALGORITHM" "$MAX_STEPS" "$BENCHMARK_KPIS" <<'PY'
-import base64, json, pathlib, sys
+INPUT_B64=$("$PYTHON_BIN" - "$ALGORITHM" "$SCENARIO" "$TIME_SERIES_IDS" "$MAX_STEPS" "$BENCHMARK_KPIS" <<'PY'
+import base64, json, sys
 
-algorithm_path = pathlib.Path(sys.argv[1])
-max_steps = int(sys.argv[2])
-kpis = [name.strip() for name in sys.argv[3].split(",") if name.strip()]
+algorithm, scenario, time_series_ids, max_steps, kpis = sys.argv[1:6]
 
 specification = {
+    "algorithm": algorithm,
     "benchmark": {
-        "max_steps": max_steps,
-        "kpis": kpis,
+        "max_steps": int(max_steps),
+        "kpis": [name.strip() for name in kpis.split(",") if name.strip()],
         "scenarios": [
-            {"env_name": "l2rpn_case14_sandbox", "time_series_ids": [0]},
+            {
+                "env_name": scenario,
+                "time_series_ids": [int(i) for i in time_series_ids.split(",") if i.strip()],
+            },
         ],
-    },
-    "algorithm": {
-        "source_b64": base64.b64encode(
-            algorithm_path.read_bytes()
-        ).decode("ascii"),
     },
 }
 
@@ -421,9 +422,9 @@ print(base64.b64encode(json.dumps(specification).encode("utf-8")).decode("ascii"
 PY
 )
 
-echo "  algorithm:   $(basename "$ALGORITHM")"
-echo "  environment: l2rpn_case14_sandbox (preset)"
-echo "  time series: [0]"
+echo "  algorithm:   $ALGORITHM"
+echo "  scenario:    $SCENARIO"
+echo "  time series: [$TIME_SERIES_IDS]"
 echo "  max_steps:   $MAX_STEPS"
 echo "  kpis:        ${BENCHMARK_KPIS//,/, }"
 echo
@@ -595,37 +596,36 @@ fi
 echo "  written to $RESULT_FILE"
 echo
 
-# The KPI set depends on what was asked for and on whether grid2benchmark
-# computed them or the service fell back to deriving its own, so the summary is
-# driven by what came back rather than by a fixed list.
+# The result is grid2benchmark's own output: one entry per scenario with its
+# episodes and KPIs, plus a cross-scenario summary.
 "$PYTHON_BIN" - "$RESULT_FILE" <<'PY'
 import json, pathlib, sys
 
 result = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-kpis = result.get("kpis", {})
-episodes = result.get("episodes", [])
+metadata = result.get("metadata", {})
 
 print("  Benchmark result:")
-print(f"    environment: {result.get('environment', {}).get('env_name')}")
-print(f"    backend:     {kpis.get('evaluation_backend', 'grid2benchmark')}")
-print(f"    episodes:    {len(episodes)}")
+print(f"    algorithm:   {metadata.get('algorithm')}")
+print(f"    versions:    grid2benchmark {metadata.get('grid2benchmark_version')}, "
+      f"grid2op {metadata.get('grid2op_version')}")
 
-for episode in episodes:
-    print(
-        f"      episode {episode.get('episode_index')}: "
-        f"{episode.get('steps')} steps, "
-        f"{episode.get('overload_violations')} overloads, "
-        f"{round(float(episode.get('runtime_seconds', 0.0)), 2)}s"
-    )
+for scenario in result.get("scenarios", []):
+    environment = scenario.get("environment", {})
+    print(f"    scenario:    {environment.get('env_name')}")
+    for episode in scenario.get("episodes", []):
+        print(
+            f"      time series {episode.get('time_series_id')}: "
+            f"{episode.get('steps')} steps, "
+            f"{episode.get('overload_violations')} overloads, "
+            f"{round(float(episode.get('runtime_seconds', 0.0)), 2)}s"
+        )
+    for name, value in sorted((scenario.get("kpis") or {}).items()):
+        if isinstance(value, dict):
+            value = ", ".join(f"{k}={v}" for k, v in value.items())
+        print(f"      {name}: {value}")
 
-for name, value in sorted(kpis.items()):
-    if name == "evaluation_backend":
-        continue
-    if isinstance(value, dict):
-        rendered = ", ".join(f"{k}={v}" for k, v in value.items())
-    else:
-        rendered = value
-    print(f"    {name}: {rendered}")
+if result.get("summary"):
+    print(f"    summary:     {json.dumps(result['summary'])}")
 PY
 
 echo

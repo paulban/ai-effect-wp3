@@ -1,29 +1,99 @@
 # Dutch Node Benchmarking Use Case (Grid2Benchmark)
 
-This use case runs a standalone benchmark service for network topology optimization algorithms.
+A standalone benchmark service for network topology optimization algorithms.
+It runs an algorithm against grid2op scenarios with the
+[grid2benchmark](https://github.com/paulban/grid2benchmark) package and returns
+grid2benchmark's result as a JSON artifact. It does not consume data from the
+data synthesizer.
 
-## MVP scope
-- Benchmark service compatible with AI-Effect control endpoints; results are JSON artifacts served over HTTP.
-- Input payload includes:
-  - optional benchmark scenario metadata (`env_name`, `topology`, `time_series`, `backend`)
-  - algorithm code template payload
-- Algorithm submission model: Python file implementing build_agent(env, context).
-- Benchmark engine: grid2benchmark (public repository dependency).
-- KPI evaluation: delegated to grid2benchmark; results are serialized as JSON (structured scenarios + summary aggregates).
-- Scenario source: a preset grid2op environment (`l2rpn_case14_sandbox` by default), configured via `benchmark.scenarios`. This service is standalone -- it does not ingest grid data from the data synthesizer.
-- Packaging:
-  - Docker use-case deployment
-  - Python package via pyproject.toml
+**Spec:** `.claude/specs/dutch-node-target-architecture-spec.md` (FR-24 to FR-28)
 
-## Key files
-- main.py: service entrypoint
-- benchmark/benchmark_operations.py: RunBenchmark operation implementation
-- algorithms/algorithm_template.py: user algorithm template
-- algorithms/greedy_baseline.py: baseline algorithm (generic no-op action policy)
-- ../../export/{blueprint,dockerinfo}.json: orchestrator workflow metadata.
-  Maintained by hand: scripts/onboarding-export-generator.py derives
-  operations from a proto, which this service no longer has
-- run_workflow.sh: end-to-end orchestration run script
+## What a request selects
+
+A request names its inputs; it never carries code or file paths. Both come from
+directories on the node that the operator fills:
+
+| Input | Selected from | Bind-mounted at |
+|---|---|---|
+| Algorithm: a `.py` file implementing `build_agent(env, context)` | `algorithms/` | `/app/algorithms` (read-only) |
+| Scenario: a grid2op environment directory | `scenarios/` | `/app/scenarios` (read-only) |
+
+A scenario name with no directory in `scenarios/` is passed to grid2op as a
+built-in environment, such as `l2rpn_case14_sandbox`. Both directories are
+bind-mounted, so a new algorithm or scenario needs no image rebuild. The image
+ships `algorithms/algorithm_template.py`, a no-op baseline and the default.
+
+Names are checked to be bare file or directory names, so a request cannot point
+the service anywhere else. The algorithm still runs inside the service process
+with no sandbox; only place code there that you trust.
+
+## How a run works
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as User/Script
+  participant O as Orchestrator
+  participant BM as Benchmarking
+  participant G2B as grid2benchmark
+
+  U->>O: Submit workflow
+  O->>BM: /control/execute RunBenchmark
+  BM->>BM: Resolve algorithm + scenarios, load and validate algorithm
+  BM-->>O: job id, immediately
+  BM->>G2B: run_benchmark(algorithm file, BenchmarkConfig)
+  G2B-->>BM: {scenarios, summary}
+  O->>BM: /control/status (until complete)
+  O->>BM: /control/output
+  BM-->>O: DataReference (http, the artifact URL)
+  U->>BM: GET the artifact URL
+  BM-->>U: Benchmark result JSON
+```
+
+Jobs run through `BatchJobRunner` from `use-cases/common/batch_jobs.py`: the job
+id is returned immediately (FR-24), the result is served at
+`/control/data/{job_id}` and referenced from `/control/output` (FR-05, FR-25),
+and simultaneous runs are capped (FR-26). A submission beyond the cap fails
+immediately.
+
+## Input payload
+
+Inline base64 JSON. Every field is optional; omitted values take
+grid2benchmark's defaults.
+
+```json
+{
+  "algorithm": "algorithm_template.py",
+  "benchmark": {
+    "max_steps": 100,
+    "kpis": ["carbon_intensity", "operation_score", "topological_action_complexity"],
+    "scenarios": [
+      {"env_name": "l2rpn_case14_sandbox", "time_series_ids": [0]},
+      {"env_name": "my_dumped_scenario", "backend": "lightsim2grid"}
+    ]
+  }
+}
+```
+
+- `env_name`: a directory in `scenarios/` or a grid2op built-in environment.
+- `time_series_ids`: which time series to run; all available when omitted.
+- `backend`: `pandapower`, `lightsim2grid` or `pypowsybl`.
+- `kpis`: grid2benchmark computes `carbon_intensity`, `operation_score` and
+  `topological_action_complexity`, and rejects the run on any other name.
+- For a single scenario, its fields may sit directly in the `benchmark` block.
+
+grid2benchmark validates all values; a rejected request fails immediately with
+its error message.
+
+## Output shape
+
+The artifact is `run_benchmark`'s result unchanged, plus `metadata`:
+
+| Field | Contents |
+|---|---|
+| `scenarios[]` | Per scenario: `environment`, `executed_time_series_ids`, `episodes` (steps, overloads, runtime per time series), `kpis` |
+| `summary` | Cross-scenario aggregates computed by grid2benchmark |
+| `metadata` | `algorithm` file name, `grid2benchmark_version`, `grid2op_version` |
 
 ## Running it
 
@@ -36,30 +106,13 @@ cd ../use-cases/dutch-node-benchmarking && docker compose up -d --build
 
 `scripts/start.sh` and `scripts/stop.sh` wrap those two lines.
 
-### How the service is reached
-
-Two ways, and the distinction matters when something breaks.
-
-**The orchestrator's workers** dial it on the `ai-effect-services` network at the
-address `export/dockerinfo.json` names, `benchmark-runner:8080`. No host port is
-involved. This is the path all real work takes, and it is what `run_workflow.sh`
-probes from inside a worker container — a probe from the host would not exercise
-it.
-
-**This machine** reaches it at `http://localhost:8004`, published on loopback by
-`docker-compose.yml`. Result references point here, so a finished benchmark is
-fetchable with nothing else running.
-
-That host port is a development convenience and it contradicts FR-19 and FR-27,
-which exist so the node exposes exactly one port however many services it grows.
-For a real deployment, put the proxy back in front:
-
-```bash
-BENCHMARK_SELF_URL=https://node.example.org/svc/benchmark docker compose up -d
-```
-
-and drop the `ports:` block. Nothing else changes — the orchestrator never used
-the host port.
+The orchestrator's workers dial the service on the `ai-effect-services` network
+at the address `export/dockerinfo.json` names, `benchmark-runner:8080`. The
+compose file also publishes it on loopback at `http://localhost:8004`; result
+references point there by default, so a finished benchmark is fetchable from
+this machine. That host port is a development convenience that FR-19 and FR-27
+do not permit in a deployment, where `BENCHMARK_SELF_URL` names the node's proxy
+route instead and the `ports:` block is dropped.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -75,148 +128,60 @@ the host port.
 SERVICE_API_KEY=<same key> ./run_workflow.sh
 ```
 
-The script submits the exported blueprint, waits for the workflow, and fetches
-the artifact the result reference points at — the full path a vendor walks. It
-checks first that the orchestrator is up, that its workers are running, and that
-the service answers at its `dockerinfo.json` address *from inside a worker*,
-because that is the call that has to succeed and a probe from the host would
-prove nothing.
+`../../submit-workflow.sh` at the use case root runs the same script. It
+submits the exported blueprint, waits for the workflow, fetches the result the
+reference points at, and prints a summary. It checks first that the
+orchestrator is up, that its workers are running, and that the service answers
+at its `dockerinfo.json` address *from inside a worker*.
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `ORCHESTRATOR_URL` | `http://localhost:18000` | Where to submit |
 | `ORCHESTRATOR_API_KEY` | unset | Bearer token on the orchestrator API |
 | `SERVICE_API_KEY` | unset | Forwarded to the service as `services_api_key`. Must match the container's, or the worker's call is rejected with 401 |
-| `ALGORITHM` | `algorithms/algorithm_template.py` | Source to benchmark |
+| `ALGORITHM` | `algorithm_template.py` | Algorithm file name in `algorithms/` |
+| `SCENARIO` | `l2rpn_case14_sandbox` | Scenario directory in `scenarios/` or grid2op built-in |
+| `TIME_SERIES_IDS` | `0` | Comma-separated time series to run |
 | `MAX_STEPS` | `100` | Steps per episode |
-| `KPIS` | all three below | Comma-separated KPI names |
+| `KPIS` | all three | Comma-separated KPI names |
 | `OUTPUT_DIR` | `./results` | Where the fetched result is written |
 
-### KPI names
+## Key files
 
-`grid2benchmark` validates KPI names and rejects the whole run on an unknown
-one. It computes `carbon_intensity`, `operation_score` and
-`topological_action_complexity`. The `survival` / `violations` / `latency`
-figures that appear in results are the *fallback* metrics this service derives
-itself when grid2benchmark returns none — they are not accepted as a request.
+- `service.py` — the service: `RunBenchmark`, request handling, the call into
+  grid2benchmark, and the batch job submission. Laid out like the onboarding
+  templates in `use-cases/templates/`
+- `handler.py` — re-exports the shared control plane from `use-cases/common/`
+- `algorithms/` — algorithm files a request can select
+- `scenarios/` — grid2op scenario directories a request can select
+- `proto/benchmarking.proto` — declares the `RunBenchmark` operation for the
+  onboarding export. The service itself speaks HTTP, not gRPC
+- `../../export/` — orchestrator workflow metadata, generated with
+  `python scripts/onboarding-export-generator.py use-cases/dutch-node-benchmarking <out>`
+  from the proto and `../../connections.json`. The generator names the
+  container `benchmarking1`
+- `run_workflow.sh` — end-to-end orchestration run script
 
-## Designer/runtime topology
-- `export/blueprint.json` and `export/dockerinfo.json` are generated by `scripts/onboarding-export-generator.py` and describe this service alone.
-- `RunBenchmark` is the single entry operation, so a workflow submission yields exactly one start node.
-
-## Benchmark sequence diagram
-```mermaid
-sequenceDiagram
-  autonumber
-  participant U as User/Script
-  participant O as Orchestrator
-  participant BM as Benchmarking
-  participant G2B as grid2benchmark
-  participant G2O as Grid2Op
-
-  U->>O: Create workflow + execute steps
-  O->>BM: /control/execute RunBenchmark
-
-  BM-->>O: task id, immediately
-
-  BM->>G2B: Preset scenario config + algorithm source
-  G2B->>G2O: Build Grid2Op env and run episodes
-  G2O-->>G2B: scenario KPIs/results
-  G2B-->>BM: BenchmarkRunResult
-
-  O->>BM: /control/status (until complete)
-  O->>BM: /control/output
-  BM-->>O: DataReference (http, the artifact URL)
-  O-->>U: Workflow status + output refs
-  U->>BM: GET the artifact URL
-  BM-->>U: BenchmarkResult JSON
-```
-
-There is no gRPC leg: the results data plane is the HTTP artifact endpoint.
-
-## Local example smoke test with baseline algorithm
-
-`scripts/local_test_greedy.py` talks to the service directly rather than through
-the orchestrator, so it needs a reachable base URL — which the published host
-port now provides:
+## Tests
 
 ```bash
-python scripts/local_test_greedy.py --base-url http://localhost:8004
+python -m pytest use-cases/dutch-node-benchmarking/services/benchmarking/tests/ -q
 ```
 
-It submits an inline payload with `algorithms/greedy_baseline.py` and fetches the
-KPI output from `/control/data/{job_id}`.
-
-## Python package flow
-- Build package artifacts from this folder:
-  - python -m pip install --upgrade build
-  - python -m build
-- Run local CLI:
-  - python benchmark_cli.py --algorithm algorithms/algorithm_template.py
-  - python benchmark_cli.py --algorithm algorithms/greedy_baseline.py
-
-## Canonical Control Payload (inline JSON)
-{
-  "benchmark": {
-    "max_steps": 100,
-    "kpis": ["carbon_intensity", "operation_score"],
-    "scenarios": [
-      {
-        "env_name": "l2rpn_case14_sandbox",
-        "time_series_ids": [0]
-      }
-    ]
-  },
-  "algorithm": {"source_b64": "<base64 python source>"}
-}
-
-## Scenario-aware benchmark payload
-{
-  "benchmark": {
-    "max_steps": 200,
-    "kpis": ["carbon_intensity", "operation_score", "topological_action_complexity"],
-    "scenarios": [
-      {
-        "env_name": "l2rpn_case14_sandbox",
-        "topology": {
-          "format": "pandapower",
-          "path": "./data/grid.json"
-        },
-        "time_series": {
-          "format": "csv",
-          "path": "./data/time_series_csv"
-        },
-        "time_series_ids": [0, 1, 2]
-      },
-      {
-        "env_name": "l2rpn_case14_sandbox",
-        "backend": "lightsim2grid",
-        "time_series_ids": [7]
-      }
-    ]
-  },
-  "algorithm": {"source_b64": "<base64 python source>"}
-}
-
-## Output shape notes
-- The artifact at `/control/data/{job_id}` is JSON with `environment`,
-  `input_summary`, `episodes`, `kpis` and `metadata`.
-- Per-scenario metrics are under `metadata.scenarios[*].kpis`.
-- `kpis` at the top level are those of the first scenario.
-- Scenario field names follow `grid2benchmark`: `env_name`, `time_series_ids`, `topology`, `time_series`, `backend`.
-
-## Supported scenario source formats
-- Topology formats: `pandapower`, `pypowsybl`, `cgmes`.
-- Time-series formats: `grid2op_chronics_dir`, `csv`, `parquet`.
-- For `csv`/`parquet` time-series, grid2benchmark performs conversion into a temporary Grid2Op-compatible environment.
-- For `grid2op_chronics_dir`, existing Grid2Op chronic directories can be consumed directly.
+The unit tests need `grid2benchmark` installed, since they use its config
+classes for real. `tests/test_batch_execution.py` covers the shared job
+lifecycle in `use-cases/common/`.
 
 ## Notes on dependencies
-- `requirements.txt` installs `grid2benchmark` from the public GitHub repository at branch `main`.
-- `requirements.txt` also installs `grid2evaluate` and a specific version of `grid2op` from GitHub because it is not currently published on PyPI.
-- `pyproject.toml` references `grid2benchmark` directly for package metadata.
-- Because `grid2benchmark` is installed from GitHub, Docker layer cache can pin older commits. Use a no-cache rebuild when validating newly added format support:
-  - `docker compose build --no-cache benchmark-runner` from the use case root
 
-## Next extension
-- Strong isolation mode (subprocess or per-run container) for untrusted code.
+- `grid2benchmark` (branch `main`), `grid2evaluate` and grid2op's
+  `env_recorder` branch are installed from GitHub; none of them is pinned to a
+  commit. Docker's layer cache can therefore keep an older commit; rebuild with
+  `docker compose build --no-cache benchmark-runner` to pick up new ones.
+- The Dockerfile installs `pyarrow==19.0.1` over the `pyarrow>=20` that
+  `grid2evaluate` declares. grid2op's `EnvRecorder`, which records every run,
+  needs pyarrow; pyarrow 20 and later only import with NumPy 2, while
+  `pypowsybl2grid` pins `numpy==1.26.4`. pip reports the conflict at build
+  time; it is deliberate.
+- `torch` is an optional extra of grid2benchmark (`grid2benchmark[torch]`) and
+  is not installed. Its CUDA build made the image about 10 GB.

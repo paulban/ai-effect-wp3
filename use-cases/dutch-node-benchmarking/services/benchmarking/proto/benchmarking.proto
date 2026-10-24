@@ -1,0 +1,12 @@
+syntax = "proto3";
+package benchmarking;
+
+service DutchNodeBenchmarking {
+  rpc RunBenchmark(RunBenchmarkRequest) returns (RunBenchmarkResponse);
+}
+
+message RunBenchmarkRequest {
+}
+
+message RunBenchmarkResponse{
+}

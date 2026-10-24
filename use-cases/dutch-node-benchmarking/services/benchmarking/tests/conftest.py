@@ -1,9 +1,9 @@
 """Import paths for the benchmark service's tests.
 
-The service imports its own modules as `benchmark` and the shared control plane
-as `common`, which in the image sit side by side under /app. Outside the image
-they live one and three directories up respectively, so both roots go on the
-path before any test module is collected.
+The service imports `handler` and the shared control plane as `common`, which
+in the image sit side by side under /app. Outside the image they live one and
+three directories up respectively, so both roots go on the path before any test
+module is collected.
 """
 
 import sys

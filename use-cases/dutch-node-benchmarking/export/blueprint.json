@@ -1,6 +1,7 @@
 {
     "nodes": [
         {
+            "proto_uri": "microservice/benchmarking1.proto",
             "image": "ghcr.io/ai-effect/dutch-node-benchmarking:latest",
             "node_type": "DataSource",
             "container_name": "benchmarking1",
@@ -9,8 +10,8 @@
                     "connected_to": [],
                     "operation_signature": {
                         "operation_name": "RunBenchmark",
-                        "output_message_name": "GetBenchmarkResultResponse",
-                        "input_message_name": "BenchmarkExecutionSpec",
+                        "output_message_name": "RunBenchmarkResponse",
+                        "input_message_name": "RunBenchmarkRequest",
                         "output_message_stream": false,
                         "input_message_stream": false
                     }
@@ -19,8 +20,8 @@
         }
     ],
     "name": "Dutch-Node-Benchmarking",
-    "pipeline_id": "0dd944a4-697b-49b9-92ca-bf6bf27ae0af",
-    "creation_date": "2026-08-03 18:09:39.141420",
+    "pipeline_id": "b1497f5a-ffd0-464d-9c7a-a1c3bd45f879",
+    "creation_date": "2026-10-23 19:01:41.825012",
     "type": "pipeline-topology/v2",
     "version": "2.0"
 }

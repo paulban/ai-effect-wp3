@@ -43,6 +43,11 @@ services:
       # Results outlive the container so a restart mid-study does not lose a
       # completed benchmark.
       - benchmark_artifacts:/artifacts
+      # Algorithms and grid2op scenarios a request selects by name. Dump new
+      # ones into these directories; no rebuild needed. Read-only: the service
+      # never writes to them.
+      - ./services/benchmarking/algorithms:/app/algorithms:ro
+      - ./services/benchmarking/scenarios:/app/scenarios:ro
     networks:
       - services
     deploy:
