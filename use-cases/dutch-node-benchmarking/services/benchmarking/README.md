@@ -78,8 +78,16 @@ grid2benchmark's defaults.
 - `env_name`: a directory in `scenarios/` or a grid2op built-in environment.
 - `time_series_ids`: which time series to run; all available when omitted.
 - `backend`: `pandapower`, `lightsim2grid` or `pypowsybl`.
-- `kpis`: grid2benchmark computes `carbon_intensity`, `operation_score` and
-  `topological_action_complexity`, and rejects the run on any other name.
+- `kpis`: by default grid2benchmark computes `carbon_intensity`,
+  `operation_score` and `topological_action_complexity`. It also accepts the
+  opt-in `network_utilization` (N-1) and `assistant_alert_accuracy`, and
+  rejects the run on any other name.
+- `network_utilization` has a known bug in grid2evaluate, so do not rely on its
+  values. It fails on grids whose element names differ between grid2op and the
+  pypowsybl conversion (such as `l2rpn_case14_sandbox`). With the pyarrow 19
+  this image installs, it skips every time step, so the N-1 values come out as
+  0. A request selecting it still runs: the warning is logged, stored in
+  `metadata.warnings`, and appended to the error if the run fails.
 - For a single scenario, its fields may sit directly in the `benchmark` block.
 
 grid2benchmark validates all values; a rejected request fails immediately with
@@ -93,7 +101,7 @@ The artifact is `run_benchmark`'s result unchanged, plus `metadata`:
 |---|---|
 | `scenarios[]` | Per scenario: `environment`, `executed_time_series_ids`, `episodes` (steps, overloads, runtime per time series), `kpis` |
 | `summary` | Cross-scenario aggregates computed by grid2benchmark |
-| `metadata` | `algorithm` file name, `grid2benchmark_version`, `grid2op_version` |
+| `metadata` | `algorithm` file name, `grid2benchmark_version`, `grid2op_version`, `warnings` (known issues of the selected KPIs, empty when none) |
 
 ## Running it
 

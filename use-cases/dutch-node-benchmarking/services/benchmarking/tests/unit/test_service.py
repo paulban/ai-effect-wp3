@@ -226,3 +226,54 @@ def test_library_calling_sys_exit_fails_the_job_instead_of_hanging(
     status = task_manager.get_status(response.task_id)
     assert status["status"] == "failed"
     assert "sys.exit(1)" in status["error"]
+
+
+def test_network_utilization_is_accepted_and_carries_its_warning(
+    algorithm_directory, job_runner, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(
+        grid2benchmark, "run_benchmark",
+        lambda algorithm, config: {"scenarios": [], "summary": {}},
+    )
+
+    response = execute_RunBenchmark(_request(
+        {"algorithm": "valid_agent.py", "benchmark": {"kpis": ["network_utilization"]}},
+        "task-n1",
+    ))
+    assert response.status == "running"
+
+    deadline = time.time() + 5
+    while task_manager.get_status(response.task_id)["status"] == "running":
+        assert time.time() < deadline, "job did not finish"
+        time.sleep(0.01)
+    assert task_manager.get_status(response.task_id)["status"] == "complete"
+
+    stored = json.loads(job_runner.artifact_store.load(response.task_id).content)
+    assert stored["metadata"]["warnings"] == [service.KPI_WARNINGS["network_utilization"]]
+
+
+def test_default_kpis_carry_no_warnings():
+    assert service._kpi_warnings(service._build_benchmark_config({})) == []
+
+
+def test_failing_network_utilization_run_names_the_known_issue(
+    algorithm_directory, job_runner, monkeypatch: pytest.MonkeyPatch
+):
+    def failing_run_benchmark(algorithm, config):
+        raise RuntimeError("grid2evaluate KPI evaluation failed for ['network_utilization']")
+
+    monkeypatch.setattr(grid2benchmark, "run_benchmark", failing_run_benchmark)
+
+    response = execute_RunBenchmark(_request(
+        {"algorithm": "valid_agent.py", "benchmark": {"kpis": ["network_utilization"]}},
+        "task-n1-fail",
+    ))
+
+    deadline = time.time() + 5
+    while task_manager.get_status(response.task_id)["status"] == "running":
+        assert time.time() < deadline, "job did not finish"
+        time.sleep(0.01)
+    status = task_manager.get_status(response.task_id)
+    assert status["status"] == "failed"
+    assert "KPI evaluation failed" in status["error"]
+    assert "Known issue: network_utilization (N-1)" in status["error"]

@@ -54,6 +54,19 @@ SCENARIO_DIRECTORY = Path(
 
 DEFAULT_ALGORITHM = "algorithm_template.py"
 
+# KPIs grid2benchmark accepts but whose values are not yet trustworthy. A
+# request selecting one still runs; the warning is logged, stored in the
+# result's metadata, and appended to the error if the run fails.
+KPI_WARNINGS = {
+    "network_utilization": (
+        "network_utilization (N-1) has a known bug in grid2evaluate and its "
+        "values must not be relied on: it fails on grids whose element names "
+        "differ between grid2op and the pypowsybl conversion (e.g. "
+        "l2rpn_case14_sandbox), and with the pyarrow 19 this image installs it "
+        "skips every time step, so its N-1 values come out as 0."
+    ),
+}
+
 # Built on first use so importing this module opens no filesystem handles and
 # reads no environment, which keeps it importable in tests.
 _job_runner: BatchJobRunner | None = None
@@ -225,6 +238,11 @@ def _build_benchmark_config(payload: dict[str, Any]) -> grid2benchmark.Benchmark
     return grid2benchmark.BenchmarkConfig(**config_kwargs)
 
 
+def _kpi_warnings(config: grid2benchmark.BenchmarkConfig) -> list[str]:
+    """Return the known-issue warnings for the KPIs a configuration selects."""
+    return [KPI_WARNINGS[kpi] for kpi in config.kpis if kpi in KPI_WARNINGS]
+
+
 def _package_version(package_name: str) -> str:
     """Return an installed package's version, or 'unknown'."""
     try:
@@ -241,7 +259,10 @@ def execute_RunBenchmark(request: ExecuteRequest) -> ExecuteResponse:
             ``algorithm_template.py``).
         benchmark:
             max_steps: Steps per episode (grid2benchmark default 200).
-            kpis: KPI names (grid2benchmark default: all it computes).
+            kpis: KPI names (grid2benchmark default: carbon_intensity,
+                operation_score, topological_action_complexity). The opt-in
+                ``network_utilization`` (N-1) and ``assistant_alert_accuracy``
+                are accepted too; see KPI_WARNINGS for the former.
             scenarios: List of scenarios, each with
                 env_name: Directory in SCENARIO_DIRECTORY or a grid2op
                     built-in environment name.
@@ -272,6 +293,10 @@ def execute_RunBenchmark(request: ExecuteRequest) -> ExecuteResponse:
             status="failed", task_id=request.task_id, error=str(validation_error)
         )
 
+    warnings = _kpi_warnings(config)
+    for warning in warnings:
+        logger.warning("RunBenchmark task %s: %s", request.task_id, warning)
+
     def run_benchmark(report_progress) -> dict:
         """Run grid2benchmark and attach what was run with which versions."""
         report_progress(10)
@@ -284,11 +309,18 @@ def execute_RunBenchmark(request: ExecuteRequest) -> ExecuteResponse:
             raise RuntimeError(
                 f"Benchmark code called sys.exit({exit_request.code})"
             ) from exit_request
+        except Exception as benchmark_error:
+            if not warnings:
+                raise
+            raise RuntimeError(
+                f"{benchmark_error}. Known issue: {' '.join(warnings)}"
+            ) from benchmark_error
         report_progress(90)
         result["metadata"] = {
             "algorithm": algorithm_path.name,
             "grid2benchmark_version": _package_version("grid2benchmark"),
             "grid2op_version": _package_version("grid2op"),
+            "warnings": warnings,
         }
         return result
 

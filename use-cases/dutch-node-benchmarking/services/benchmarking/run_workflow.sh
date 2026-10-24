@@ -35,8 +35,10 @@
 #                         environment. Default l2rpn_case14_sandbox
 #   TIME_SERIES_IDS       Comma-separated time series to run. Default 0
 #   MAX_STEPS             Steps per episode. Default 100
-#   KPIS                  Comma-separated KPI names. Default is all three
-#                         grid2benchmark computes; see BENCHMARK_KPIS below
+#   KPIS                  Comma-separated KPI names. Default is grid2benchmark's
+#                         default three; see BENCHMARK_KPIS below. The opt-in
+#                         network_utilization (N-1) has a known bug and its
+#                         values are not reliable; the result carries a warning
 #   OUTPUT_DIR            Where the fetched result is written. Default ./results
 
 set -euo pipefail
@@ -608,6 +610,8 @@ print("  Benchmark result:")
 print(f"    algorithm:   {metadata.get('algorithm')}")
 print(f"    versions:    grid2benchmark {metadata.get('grid2benchmark_version')}, "
       f"grid2op {metadata.get('grid2op_version')}")
+for warning in metadata.get("warnings", []):
+    print(f"    WARNING:     {warning}")
 
 for scenario in result.get("scenarios", []):
     environment = scenario.get("environment", {})
