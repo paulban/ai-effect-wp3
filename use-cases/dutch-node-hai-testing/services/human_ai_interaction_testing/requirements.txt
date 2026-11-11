@@ -1,5 +1,17 @@
 fastapi==0.115.6
 uvicorn==0.32.1
 httpx==0.28.1
-redis==5.2.1
-pytest>=8.3.4
+toml==0.10.2
+# The agent wrapper rebuilds the simulator's observations and actions, so it
+# runs the simulator's grid2op stack (usecases_examples/PowerGrid/requirements-app.txt
+# in InteractiveAI): newer grid2op or pandapower releases change the JSON
+# layout or fail to load the grid.
+Grid2Op==1.9.8
+LightSim2Grid==0.7.5
+pandapower==2.13.1
+# pandapower 2.13.1 hands literal JSON strings to pandas.read_json, which
+# pandas 3 no longer accepts (FileNotFoundError when loading the grid).
+pandas>=2.2,<2.3
+numpy<2
+# grid2op 1.9.8 imports pkg_resources, which setuptools 81 removed.
+setuptools<81

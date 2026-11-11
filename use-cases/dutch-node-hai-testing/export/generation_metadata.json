@@ -4,7 +4,7 @@
     "source_path": "../../use-cases/dutch-node-hai-testing",
     "services": [
         {
-            "service_name": "hai-testing-service",
+            "service_name": "hai-session-runner",
             "container_name": "human_ai_interaction_testing1",
             "image_name": "ghcr.io/ai-effect/dutch-node-hai-testing:latest"
         }

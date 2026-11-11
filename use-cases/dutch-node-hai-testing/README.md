@@ -1,118 +1,131 @@
 # Dutch Node — Human-AI Interaction Testing
 
-A human-in-the-loop evaluation of an AI-assisted power-grid operator workflow.
-A session hands a participant two browser links — a grid simulator and a
-questionnaire — collects what they produce, and returns it as a single result.
+A human-in-the-loop test of an AI algorithm as a power-grid operator's
+assistant. The orchestrator starts a session with a config. A participant then
+plays one episode in [InteractiveAI](https://github.com/ainetus/InteractiveAI),
+with the algorithm's recommendations on screen. When the session's time window
+ends, the service returns one JSON result.
 
-**Spec:** `.claude/specs/dutch-node-target-architecture-spec.md`
+**Spec:** `.claude/specs/hai-orchestrated-session-spec.md`
+**Service details:** [`services/human_ai_interaction_testing/README.md`](services/human_ai_interaction_testing/README.md)
 
 ---
 
 ## How a session works
 
 ```
-orchestrator ──POST /control/execute──▶ hai-testing-service
-                                             │
-                                    reserve a free slot (Redis, SET NX)
-                                             │
-                                    configure it over HTTP
-                                             │
-                    ◀── gui_url + survey_url, signed and proxied ──
-                                             │
-participant ──https://<node>/s/<id>/gui?t=…──▶ session-proxy
-                                             │  validates the token,
-                                             │  asks the control service
-                                             │  which slot serves <id>
-                                             ▼
-                                    hai-slot-<n>-simulator
-                                    hai-slot-<n>-survey
-                                             │
-                       results POSTed back to /wp3/collect/…
-                                             │
-                              both arrived ──▶ session COMPLETED,
-                                               artifact stored,
-                                               slot released
+orchestrator ──/control/execute RunHAISession──▶ hai-session-runner
+                                                    │ validate the request
+                                                    │ preflight: simulator, gateway, test account
+                                                    │ load the algorithm → serve it as the agent
+                                                    │ write the simulator's CONFIG.toml
+                                                    ▼
+          participant links + instructions  ◀── /control/intermediate/{job_id}
+                                                    │
+participant ──▶ PowerGrid simulator (:5122)         │      cab_recommendation
+             └─▶ InteractiveAI frontend (:3200) ──────▶  POST /api/v1/recommendation
+                                                    │      (RL_AGENT_API_URL → hai-session-runner)
+                                                    │
+                                    deadline ──▶ fetch cabhistoric traces of the window
+                                                    ▼
+orchestrator ◀── /control/output → /control/data/{job_id}   (HAISessionResult JSON)
 ```
 
-The orchestrator polls `/control/status/{task_id}` and reads the result from
-`/control/output/{task_id}`, which returns an HTTP URL it can fetch.
+1. The orchestrator submits a request that names an **algorithm** in
+   `algorithms/`, a **scenario** in `scenarios/`, and the
+   **session duration**, which is the participant's time window.
+2. The service makes the algorithm the recommendation agent of the running
+   InteractiveAI stack. It also writes the simulator's `CONFIG.toml`, which the
+   simulator reads on the next "Load simulation".
+3. The participant's links, test credentials, deadline and instructions are
+   available at `GET /control/intermediate/{job_id}`. This is the placeholder
+   until the orchestrator relays intermediate results.
+4. The participant logs into the simulator, loads and starts the scenario,
+   decides on each event in InteractiveAI, and presses Resume in the simulator.
+   At the end they log out of InteractiveAI and answer the questionnaire.
+5. At the deadline the service collects InteractiveAI's traces of the session
+   window into one JSON artifact, and the job completes.
 
-## What is deliberately absent
-
-- **No Docker socket.** Session containers are declared in `docker-compose.yml`
-  and stay up. Starting a session reserves one and configures it; nothing
-  creates containers at runtime.
-- **No published ports except the proxy.** The control service, Redis and every
-  slot are reachable only on the internal network.
-- **No polling thread and no shared results directory.** Results are posted to
-  the service; the second one to arrive completes the session.
-- **No gRPC or protobuf.** The service runs standalone, not as a pipeline
-  node. The results data plane is the HTTP artifact endpoint.
+Only one session runs at a time. A second request is refused with the running
+session's deadline.
 
 ## Running it
 
-The InteractiveAI CAB platform is a separate, long-lived stack. Start it first;
-this compose file attaches to the same `ai-effect-services` network and reaches
-it by name.
+**Once per machine**, bring up InteractiveAI. The script builds and starts the
+backend, frontend and simulator from the submodule, then wires them to this
+service:
 
 ```bash
+git submodule update --init --recursive
 docker network create ai-effect-services   # if it does not exist
-
-export HAI_SESSION_TOKEN_SECRET=$(openssl rand -hex 32)
-export HAI_PUBLIC_BASE_URL=https://node.example.org   # as a participant sees it
-export SERVICE_API_KEY=$(openssl rand -hex 32)
-
-cd use-cases/dutch-node-hai-testing
-docker compose up -d --build
+use-cases/dutch-node-hai-testing/scripts/setup_interactiveai.sh
 ```
 
-Both `HAI_SESSION_TOKEN_SECRET` and `HAI_PUBLIC_BASE_URL` are required and the
-stack refuses to start without them. The first signs participant links; the
-second is what those links point at, so an internal Docker name here produces
-links no participant can open.
-
-### Configuration
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `HAI_PROXY_HOST_PORT` | `8443` | The only published port |
-| `HAI_SESSION_SLOT_COUNT` | `2` | Concurrent sessions. Must match the number of slot pairs in the compose file |
-| `HAI_SESSION_TOKEN_SECRET` | — | **Required.** Signs session links |
-| `HAI_PUBLIC_BASE_URL` | — | **Required.** Base URL participants reach the node at |
-| `SERVICE_API_KEY` | unset | Bearer token on `/control/*`. Unset means open — acceptable only on a developer machine |
-| `HAI_CAB_URL` | `http://frontend:80` | CAB platform address passed to each simulator |
-
-### Adding a third concurrent participant
-
-Add a `hai-slot-3-simulator` / `hai-slot-3-survey` pair to
-`docker-compose.yml` following the existing ones, and raise
-`HAI_SESSION_SLOT_COUNT` to 3. No firewall change is involved, because slots
-publish no ports. The binding constraint is memory: each idle simulator holds a
-loaded grid2op environment.
-
-## Submodule
-
-The simulator image is built from the `feat/wp3-simulator-config-api` branch of
-[`AI-EFFECT/InteractiveAI`](https://github.com/AI-EFFECT/InteractiveAI), which
-adds environment-based configuration and the `/hai/session`, `/hai/reset` and
-`/hai/state` endpoints this service drives. The branch is additive: with no WP3
-variables set and no `/hai` call, the app behaves exactly as upstream.
-
-`hmisurveys` is unchanged.
-
-## Tests
+Then start the session service and the orchestrator:
 
 ```bash
-cd services/human_ai_interaction_testing
-python -m pytest tests/ -q
+export HAI_INTERACTIVEAI_COMMIT=<printed by the setup script>   # optional
+cd orchestrator && docker compose up -d
+cd ../use-cases/dutch-node-hai-testing && docker compose up -d --build
 ```
 
-34 tests cover the acceptance criteria in section 9.1 of the spec: concurrent
-slot reservation, exhaustion, timeout reclamation, token forgery and expiry,
-unauthenticated control calls, ambiguous result attribution, and event-driven
-completion.
+Put at least one scenario in `services/human_ai_interaction_testing/scenarios/`
+(see the README there; the simulator's own test environment is a quick start).
+Then run a session through the orchestrator:
 
-**Not covered by these tests**, because they need a running stack: the browser
-round trip, the real HTTP configuration of a slot, and whether memory is
-actually reclaimed when a simulator is reused across sessions (open question 1
-in the spec).
+```bash
+SESSION_DURATION_SECONDS=900 ./submit-workflow.sh
+```
+
+The script prints the participant instructions as soon as the session is live,
+waits for the deadline, and fetches the result.
+
+Re-run `setup_interactiveai.sh` after recreating `frontend`,
+`cab_recommendation` or the simulator, because their connection to
+`ai-effect-services` does not survive a recreate.
+
+## InteractiveAI is used unmodified
+
+The submodule stays at an upstream commit. Everything this use case needs is
+done from outside InteractiveAI:
+
+| Need | How, without changing InteractiveAI |
+|---|---|
+| Use the selected algorithm | `RL_AGENT_API_URL` points `cab_recommendation` at this service's agent endpoint |
+| Select the scenario | The simulator's `config/CONFIG.toml` is a bind mount this service rewrites (`simulator.override.yml`) |
+| Reach the stack | `docker network connect ai-effect-services` for `frontend`, `cab_recommendation` and the simulator |
+| Collect results | The cabhistoric traces API, with the test account |
+
+That approach has limits. Each row below needs an InteractiveAI change to lift
+it (spec section 6.3):
+
+| ID | Limitation today | InteractiveAI change needed |
+|---|---|---|
+| IAI-1 | Survey answers and the session export only download in the browser, so `survey` is `null` in the result | Post both to a configurable URL at logout / survey completion |
+| IAI-2 | No "participant finished" signal, so a session always runs to its deadline | Emit a trace at logout and survey completion |
+| IAI-3 | Applying a recommendation does not resume the simulator, so the participant needs the simulator UI to press Resume | Frontend calls `/continue_simulation` after an apply, or the simulator resumes on receiving an action |
+| IAI-4 | Traces have no user or session id, so the result may include other activity on the test account in the window | Record and filter traces by user / session |
+| IAI-5 | No max-steps setting, so the scenario's chronic defines the episode length | A `max_steps` key in CONFIG.toml |
+| IAI-6 | `load_assistant` hardcodes `XD_silly_repo`, so the simulator's local assistant cannot be chosen | Import from `assistant_path` |
+| IAI-7 | The simulator dashboard lets the participant change scenario and settings | A locked study mode |
+| IAI-8 | Agents are configured only by env vars at container start | Runtime agent registration (not needed here: the agent URL is fixed) |
+
+## Layout
+
+| Path | Contents |
+|---|---|
+| `docker-compose.yml` | The `hai-session-runner` service |
+| `simulator.override.yml` | Mounts for InteractiveAI's simulator (CONFIG.toml, scenarios) |
+| `scripts/setup_interactiveai.sh` | One-time InteractiveAI setup |
+| `submit-workflow.sh` | Runs a session through the orchestrator |
+| `connections.json`, `export/` | Onboarding package (`hai-session-runner`, `RunHAISession`) |
+| `runtime/` | Git-ignored: the shared CONFIG.toml and the backend's env file |
+| `services/human_ai_interaction_testing/` | Service code, tests, algorithms, scenarios, InteractiveAI submodule |
+
+The export was regenerated for the new container and operation names, so
+**the package on the portal must be uploaded again**:
+
+```bash
+python scripts/onboarding-export-generator.py use-cases/dutch-node-hai-testing \
+  use-cases/dutch-node-hai-testing/export --overwrite --zip
+```

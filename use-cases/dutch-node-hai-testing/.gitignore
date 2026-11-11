@@ -14,3 +14,15 @@ venv/
 env/
 
 # NOTE: export/ is tracked, matching the other nodes.
+
+# Simulator CONFIG.toml shared with the InteractiveAI simulator; created by
+# scripts/setup_interactiveai.sh and rewritten every session.
+runtime/
+
+# Results fetched by run_workflow.sh
+services/human_ai_interaction_testing/results/
+
+# Scenarios are operator data (often large grid2op environments); only the
+# format description is tracked.
+services/human_ai_interaction_testing/scenarios/*
+!services/human_ai_interaction_testing/scenarios/README.md

@@ -1,0 +1,32 @@
+# Compose override for InteractiveAI's PowerGrid simulator (spec FR-23).
+#
+# Applied on top of the submodule's own local compose file, which stays
+# untouched:
+#
+#   docker compose \
+#     -f services/human_ai_interaction_testing/InteractiveAI/usecases_examples/PowerGrid/docker-compose.local.yml \
+#     -f simulator.override.yml \
+#     up -d --build --force-recreate app
+#
+# scripts/setup_interactiveai.sh runs exactly that. Paths below are relative to
+# the first compose file's directory (Compose resolves every file against the
+# project directory, which is the first file's), hence the ../../../../.. climb
+# back to this use case.
+#
+# The local compose file already bind-mounts the simulator's source at /code.
+# These nested mounts replace two paths inside it:
+#   - config/CONFIG.toml, which hai-session-runner writes for each session and
+#     the simulator rereads on every "Load simulation";
+#   - Ressources/hai_scenarios, the same scenarios hai-session-runner validates
+#     against and builds its agent environment from.
+
+services:
+  app:
+    build:
+      # Context stays the submodule's PowerGrid folder (from the base file);
+      # only the Dockerfile is ours. See simulator.Dockerfile for why.
+      dockerfile: ../../../../../simulator.Dockerfile
+    volumes:
+      # Read-write: the simulator's own config forms write it back in place.
+      - ../../../../../runtime/simulator/CONFIG.toml:/code/config/CONFIG.toml
+      - ../../../../../services/human_ai_interaction_testing/scenarios:/code/Ressources/hai_scenarios:ro

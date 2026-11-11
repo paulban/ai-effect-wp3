@@ -1,256 +1,177 @@
-# Human-AI Interaction Testing Service
+# HAI Session Service (`hai-session-runner`)
 
-WP3 Dutch Node service that orchestrates human-operator evaluation sessions using
-the [InteractiveAI](https://github.com/AI4REALNET/InteractiveAI) framework and
-[hmisurveys](https://github.com/AI4REALNET/hmisurveys). An AI vendor submits a
-testing configuration; a human operator opens the grid simulation in a browser
-tab and the survey in a second tab; each tool writes its own result file to a
-shared directory, and both results are returned to the vendor when the session completes.
+Runs one human-AI interaction session per `RunHAISession` request, against an
+InteractiveAI stack that is already up. For the overall flow and setup, see
+the [use-case README](../../README.md). The spec is
+`.claude/specs/hai-orchestrated-session-spec.md`.
 
-## Architecture (v0.2 — Two-Instances Design)
+## What a request selects
 
-InteractiveAI and hmisurveys run as **independent containers**. The operator
-receives two URLs and navigates between them manually. Each tool writes its own
-result file; the WP3 service only transitions to COMPLETED when **both** files are present.
+As in benchmarking, a request names its inputs and never carries code or paths.
+Both come from directories the node operator fills:
 
-```
-AI Vendor / Orchestrator
-     │
-     │  HTTP control plane: StartHumanAISession
-     ▼
-[WP3 hai-testing-service]
-     │  Docker Python SDK — launches TWO containers simultaneously
-     ├──────────────────────────────────────────────────┐
-     ▼                                                  ▼
-[InteractiveAI container]                         [hmisurveys container]
- port 8090 → gui_url                              port 8091 → survey_url
- operator runs grid episode                       operator fills survey
- writes kpis.json to /results                     writes survey_outcomes.json to /results
-     │                                                  │
-     └──────────────┬───────────────────────────────────┘
-                    ▼
-        [Shared host-mounted results directory]
-                    │  polling every 5 s — waits for BOTH files
-                    ▼
-        [WP3 hai-testing-service]
-                    │  both files present → session COMPLETED
-                    ▼
-             GetSessionResult returns
-               kpis + survey_outcomes
-```
+| Input | Selected from | Mounted at |
+|---|---|---|
+| Algorithm: a `.py` file implementing `build_agent(env, context)` | `algorithms/` | `/app/algorithms` (ro) |
+| Scenario: a grid2op environment directory, in the simulator's format | `scenarios/` | `/app/scenarios` (ro), and in the simulator at `/code/Ressources/hai_scenarios` (ro) |
 
-The operator workflow:
-1. Receives `gui_url` (InteractiveAI) — operates the grid until the episode ends.
-2. InteractiveAI writes `kpis.json` to the shared directory.
-3. Operator opens `survey_url` (hmisurveys) — fills in the questionnaire and submits.
-4. hmisurveys writes `survey_outcomes.json` to the shared directory.
-5. WP3 detects both files and transitions the session to COMPLETED.
+The algorithm contract is benchmarking's: `build_agent` returns an object
+with `act(observation) -> grid2op action`. The same file works in both
+services. `context` holds `use_case` (`"hai_session"`), `scenario`,
+`session_duration_seconds` and `scenario_directory`.
 
-## Submodules
+## Input payload
 
-`InteractiveAI/` and `hmisurveys/` are **git submodules** pinned to specific
-commits of the AI-EFFECT forks:
-
-| Directory | Submodule URL |
-|-----------|---------------|
-| `InteractiveAI/` | `https://github.com/AI-EFFECT/InteractiveAI` |
-| `hmisurveys/` | `https://github.com/AI-EFFECT/hmisurveys` |
-
-A plain `git clone` leaves both directories **empty**, and
-`docker-compose-all.yml` then fails because it builds from `./InteractiveAI/backend`.
-Populate them with either:
-
-```bash
-git clone --recurse-submodules <this repo>       # fresh clone
-git submodule update --init --recursive          # existing clone
-```
-
-CI checkouts need the same (for `actions/checkout`, set `submodules: recursive`).
-
-To pull changes from the true upstreams, `cd` into the submodule and use the
-`upstream` remote (`ainetus/InteractiveAI`, `AI4REALNET/hmisurveys`), then commit
-the updated submodule pointer in this repository.
-
-## Quick Start (Linux)
-
-```bash
-# 1. Build the tool images from the submodules (until official images are
-#    published — OQ-4). Run from this directory:
-# docker build -t interactiveai:latest ./InteractiveAI
-# docker build -t hmisurveys:latest ./hmisurveys
-
-# 2. Set required environment variables
-export HAI_INTERACTIVE_AI_IMAGE=interactiveai:latest
-export HAI_HMISURVEYS_IMAGE=hmisurveys:latest
-export HAI_RESULTS_HOST_PATH=/tmp/hai_sessions
-
-# 3. Create the shared results directory and Docker network
-mkdir -p /tmp/hai_sessions
-docker network create ai-effect-services 2>/dev/null || true
-
-# 4. Start the service
-docker compose -f docker-compose-all.yml up --build
-```
-
-## Environment Variables
-
-### InteractiveAI Container
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HAI_INTERACTIVE_AI_IMAGE` | *(required)* | Docker image for InteractiveAI (build locally — see OQ-4) |
-| `HAI_INTERACTIVE_AI_PORT` | `8090` | Host port for the InteractiveAI grid GUI |
-| `HAI_GUI_BASE_URL` | `http://host.docker.internal:8090` | URL returned as `gui_url`; replace with host IP on Linux |
-
-### hmisurveys Container
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HAI_HMISURVEYS_IMAGE` | *(required)* | Docker image for hmisurveys (build locally — see OQ-4) |
-| `HAI_HMISURVEYS_PORT` | `8091` | Host port for the hmisurveys survey UI |
-| `HAI_SURVEY_BASE_URL` | `http://host.docker.internal:8091` | URL returned as `survey_url`; replace with host IP on Linux |
-
-### Shared
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HAI_RESULTS_HOST_PATH` | `/tmp/hai_sessions` | Absolute host path for session result dirs |
-| `HAI_RESULTS_CONTAINER_PATH` | `/hai-sessions` | Mount point inside the service container |
-| `HAI_DOCKER_NETWORK` | `ai-effect-services` | Docker network for both sub-containers |
-| `HAI_KPIS_FILENAME` | `kpis.json` | Filename written by InteractiveAI on episode end |
-| `HAI_SURVEY_FILENAME` | `survey_outcomes.json` | Filename written by hmisurveys on survey submit |
-| `PORT` | `8080` | HTTP control plane port |
-
-## Required Volume Mounts
-
-The service container needs two mounts (defined in `docker-compose-all.yml`):
-
-```yaml
-volumes:
-  - /var/run/docker.sock:/var/run/docker.sock   # Docker socket for container management
-  - /tmp/hai_sessions:/hai-sessions             # Shared results directory (both tools write here)
-```
-
-## Session operations
-
-**StartHumanAISession** — Start a session, receive two browser URLs.
-
-```
-StartHumanAISession(HumanAISessionSpec) → StartSessionResponse
-  HumanAISessionSpec:
-    scenario.name              (str, empty = InteractiveAI default)
-    agent.name                 (str, empty = InteractiveAI built-in agent)
-    survey.survey_id           (str, empty = hmisurveys default)
-    kpis                       (list[str], empty = collect all from InteractiveAI)
-    session_timeout_seconds    (int, > 0, required)
-
-  StartSessionResponse:
-    session_id    (str) — stable identifier for polling
-    gui_url       (str) — open in browser: InteractiveAI grid simulation
-    survey_url    (str) — open in browser after episode: hmisurveys questionnaire
-```
-
-**GetSessionStatus** — Poll until COMPLETED or FAILED.
-
-```
-Phases: PENDING → GUI_READY → IN_PROGRESS → SURVEY → COMPLETED | FAILED
-
-COMPLETED requires: kpis.json AND survey_outcomes.json both present.
-FAILED if timeout expires before both files appear.
-```
-
-**GetSessionResult** — Fetch results after COMPLETED.
-
-```
-Returns:
-  kpis            object  — from InteractiveAI kpis.json
-  survey_outcomes object  — from hmisurveys survey_outcomes.json
-Error if session is not yet COMPLETED.
-```
-
-## Windows Development — Known Issues
-
-> **InteractiveAI and hmisurveys compatibility on Windows is limited.**
-
-**Recommended workaround:** Use WSL2 or a Linux VM for development and testing.
-
-- `host.docker.internal` resolves correctly on Docker Desktop (Windows/Mac) but
-  must be replaced with the host IP on native Linux deployments.
-- The Docker socket path `/var/run/docker.sock` requires Docker Desktop WSL integration
-  to be enabled on Windows.
-
-This is a **known v1 limitation** (NFR-01). The primary deployment target is Linux.
-
-## Unresolved Items Before End-to-End Use
-
-### OQ-1 — InteractiveAI results export hook
-
-InteractiveAI must write `kpis.json` to `/results` (the mounted volume path) on
-grid episode end. This is not yet implemented upstream. Required format:
+One inline base64 JSON input:
 
 ```json
-{ "<kpi_name>": <value>, ... }
+{
+  "algorithm": "algorithm_template.py",
+  "scenario": {
+    "env_name": "env_ICAPS_input_data_test",
+    "scenario_name": "2035-01-01_0",
+    "scenario_first_step": 0,
+    "env_seed": 0,
+    "step_duration_s": 0.5
+  },
+  "session_duration_seconds": 86400,
+  "kpis": []
+}
 ```
 
-Env vars the container will receive: `HAI_RESULTS_PATH=/results`, `HAI_KPIS_FILENAME=kpis.json`.
-The WP3 service reads `kpis.json` dynamically — keys are not hardcoded.
+| Field | Required | Default | Rule |
+|---|---|---|---|
+| `algorithm` | no | `algorithm_template.py` | `.py` file in `algorithms/` |
+| `scenario.env_name` | yes | | Directory in `scenarios/` with `chronics/`. Built-in grid2op names are not supported |
+| `scenario.scenario_name` | yes | | Chronic folder holding `prod_p`, `load_p`, `prod_v`, `load_q`, `prod_p_forecasted`, `load_p_forecasted`, `load_q_forecasted` |
+| `scenario.scenario_first_step` | no | `0` | int ≥ 0; the step the participant takes over from |
+| `scenario.env_seed` | no | `0` | int ≥ 0 |
+| `scenario.step_duration_s` | no | `0.5` | 0 < x ≤ 60 |
+| `session_duration_seconds` | yes | | 60 to 2 592 000 (30 days) |
+| `kpis` | no | `[]` | Reserved. Accepted and recorded as a warning; nothing is computed yet |
 
-### OQ-2 — hmisurveys results export hook
+Unknown keys are rejected. Every check runs before a job starts, so
+`/control/execute` itself answers `failed` with the reason.
 
-hmisurveys must write `survey_outcomes.json` to `/results` on survey submit.
-Required format:
+## Endpoints
 
-```json
-{ "<field_name>": <value>, ... }
-```
+| Endpoint | Caller | Purpose |
+|---|---|---|
+| `POST /control/execute` | orchestrator | Starts a session; returns the job id immediately |
+| `GET /control/status/{job_id}` | orchestrator | `running` (progress = elapsed share of the window, ≤ 99), `complete`, `failed` |
+| `GET /control/intermediate/{job_id}` | placeholder | Participant links, credentials, deadline, instructions. `409` before go-live, `404` if unknown |
+| `GET /control/output/{job_id}` | orchestrator | DataReference to the result |
+| `GET /control/data/{job_id}` | anyone with the reference | The result JSON |
+| `POST /api/v1/recommendation` | `cab_recommendation` | The algorithm's recommendation for the posted observation; `[]` outside a session |
+| `GET /api/v1/health` | setup script | Liveness plus the active session id |
+| `GET /health` | Docker | Liveness |
 
-Env vars the container will receive: `HAI_RESULTS_PATH=/results`, `HAI_SURVEY_FILENAME=survey_outcomes.json`.
+`/control/*` (including `intermediate`) requires `SERVICE_API_KEY` when it is
+set. `/api/v1/recommendation` requires `HAI_AGENT_TOKEN` when that is set. The
+setup script gives `cab_recommendation` the same token.
 
-> **Until OQ-1 and OQ-2 are resolved, the polling loop has nothing to pick up
-> and the service cannot complete a session.**
+`/control/status` cannot carry the intermediate object, because the shared
+control plane's response model drops extra fields. The orchestrator does not
+read intermediate results yet. Until it does, the object is also logged at
+go-live and stored in the result under `session.intermediate`.
 
-### OQ-3 — KPI names and survey field names
+## Session lifecycle
 
-Both are tool-dependent. The WP3 service parses keys dynamically — no code
-change is needed once the export hooks are in place.
+| Step | What happens | On failure |
+|---|---|---|
+| Preflight | `GET` the simulator, `GET /cabrecommendation/api/v1/health` via the gateway, obtain a test-account token; 3 tries each | Job `failed`, naming the check and URL |
+| Activate | Build a grid2op env exactly as the simulator does, import the algorithm, call `build_agent`, install the agent | Job `failed` with the exception |
+| Configure | Rewrite the shared CONFIG.toml in place (all 12 keys) | Job `failed` |
+| Go live | Fix the deadline, publish the intermediate object | |
+| Wait | Until the deadline, progress every 30 s. Nothing else ends a session | |
+| Collect | Remove the agent; `GET /cabhistoric/api/v1/traces?use_case=PowerGrid&date_start&date_end` (window ± 15 min), 4 tries with 5/15/45 s back-off | Job `failed`, with the query URL so the traces can be fetched by hand |
 
-### OQ-4 — Docker image names
+The agent is removed and the slot freed on every exit path.
 
-Build locally from:
-- [AI4REALNET/InteractiveAI](https://github.com/AI4REALNET/InteractiveAI) → `HAI_INTERACTIVE_AI_IMAGE`
-- [AI4REALNET/hmisurveys](https://github.com/AI4REALNET/hmisurveys) → `HAI_HMISURVEYS_IMAGE`
+### Agent endpoint behaviour
 
-### OQ-5 — InteractiveAI web-app internal port
+`cab_recommendation` forwards the simulator's context, and the wrapper reads
+`context.data.observation` (the simulator's `obs.to_json()`). It loads the
+observation into its own environment, calls `agent.act`, and answers with one
+recommendation:
+`{"title": "Do nothing" | "Recommended action", "description": str(action), "use_case": "PowerGrid", "agent_type": "IA", "actions": [action.to_json()], "kpis": {}}`.
+The frontend applies `actions[0]`, and the simulator rebuilds the action with
+`action_space().from_json`.
 
-Unknown until the image is built and run. Set `HAI_INTERACTIVE_AI_PORT` once confirmed.
-The current default (`8080/tcp` inside the container, mapped to `8090` on the host)
-mirrors a typical Flask/FastAPI app — adjust if different.
+The endpoint never fails a session. It answers `[]` when there is no active
+session, the observation is missing, `act` raises, or `act` takes longer than
+`HAI_AGENT_ACT_TIMEOUT_SECONDS`. The last three are recorded in the result's
+warnings, keeping the first 50.
 
-### OQ-6 — Docker socket in deployment
+**Limitation:** an observation rebuilt from JSON is not attached to the
+participant's live environment. Algorithms that call `observation.simulate`
+get the wrapper environment's forecasts, not the participant's.
 
-Needs verification that `/var/run/docker.sock` is accessible inside the container.
-Mount it explicitly (see `docker-compose-all.yml`).
+## Result (`HAISessionResult`)
 
-### OQ-7 — hmisurveys internal port
+| Field | Contents |
+|---|---|
+| `metadata` | `service`, `task_id`, `algorithm`, `interactiveai_commit`, `grid2op_version`, `trace_query` (URL and window), `warnings` |
+| `config` | The request with defaults filled in |
+| `session` | `started_at`, `deadline`, `ended_at` (UTC, `Z`), and the `intermediate` object |
+| `traces` | cabhistoric traces of the window, unchanged |
+| `kpis` | `null` (reserved) |
+| `survey` | `null`: InteractiveAI only downloads survey answers in the browser |
+| `not_collected` | Why survey, session export and KPIs are absent |
 
-Unknown until the image is built and run. Set `HAI_HMISURVEYS_PORT` once confirmed.
+`metadata.warnings` always says that traces are filtered by time and use case
+only. Any other use of the test account during the window shows up in the
+result.
 
-## Known v1 Limitations
+## Configuration
 
-- **Single session at a time**: only one active session per service instance.
-- **No session persistence**: a service restart loses all in-progress session state.
-- **No GUI authentication**: `gui_url` and `survey_url` are publicly accessible to
-  anyone with the URL during the session lifetime.
-- **Manual operator handoff**: the operator must navigate from `gui_url` to `survey_url`
-  themselves — the two tools are not yet integrated.
+| Variable | Default | Purpose |
+|---|---|---|
+| `SERVICE_API_KEY` | unset | Bearer on `/control/*` |
+| `HAI_HOST_PORT` / `HAI_SELF_URL` | `8005` / `http://localhost:8005` | Loopback port; base of result references |
+| `HAI_AGENT_TOKEN` | unset | Bearer on the agent endpoint; must match `cab_recommendation`'s `RL_AGENT_API_TOKEN` |
+| `HAI_AGENT_ACT_TIMEOUT_SECONDS` | `20` | Per-recommendation budget (cab_recommendation waits 30 s) |
+| `HAI_CAB_INTERNAL_URL` | `http://frontend:80` | Gateway as the service reaches it |
+| `HAI_SIMULATOR_INTERNAL_URL` | `http://PowerGrid-simulator-app:5000` | Simulator as the service reaches it (preflight only) |
+| `HAI_FRONTEND_PUBLIC_URL` / `HAI_SIMULATOR_PUBLIC_URL` | `http://localhost:3200` / `http://localhost:5122` | Links for the participant |
+| `HAI_SIMULATOR_CAB_SERVER` | `http://host.docker.internal:3200/` | Server the participant picks in the simulator login |
+| `HAI_CAB_USERNAME` / `HAI_CAB_PASSWORD` | `powergrid_user` / `test` | Test account |
+| `HAI_TRACE_WINDOW_MARGIN_SECONDS` | `900` | Trace window widening on each side |
+| `HAI_INTERACTIVEAI_COMMIT` | unset | Recorded in results |
 
-## Running Tests
+## Dependencies
+
+The wrapper must read the simulator's JSON, so it runs the simulator's grid2op
+stack: `Grid2Op==1.9.8`, `LightSim2Grid==0.7.5`, `pandapower==2.13.1`. Two
+non-obvious pins come with it:
+- `pandas<2.3`: pandas 3 breaks pandapower 2.13's grid loading.
+- `setuptools<81`: grid2op 1.9.8 imports `pkg_resources`.
+
+## Tests
 
 ```bash
 cd use-cases/dutch-node-hai-testing/services/human_ai_interaction_testing
-pip install -r requirements.txt
-pytest tests/ -v
+python -m pytest tests/ -q
 ```
 
-Docker-dependent tests (container launch) are excluded from the
-unit test suite; run them as integration tests once OQ-4 and OQ-6 are resolved.
+The tests cover the acceptance criteria and scenarios in spec section 9:
+validation, CONFIG.toml written in place, the InteractiveAI client (token,
+preflight, trace window, retries), the agent endpoint (token, empty answers,
+timeouts, warnings), and the session lifecycle through the real control plane
+(happy path, busy refusal, intermediate result, preflight / build / collection
+failures, interruption).
+
+The grid2op round-trip tests use the simulator's own
+`env_ICAPS_input_data_test` from the submodule, and are skipped when grid2op or
+lightsim2grid is not installed. To run everything with the exact image
+dependencies:
+
+```bash
+cd use-cases
+docker run --rm -v "$PWD:/uc" -w /uc/dutch-node-hai-testing/services/human_ai_interaction_testing \
+  ghcr.io/ai-effect/dutch-node-hai-testing:latest sh -c "pip install -q pytest && python -m pytest tests/ -q"
+```
+
+**Not covered by the tests** (needs the full stack and a participant): the
+browser round trip, the shape of a real `cab_recommendation` request, and the
+timezone of stored trace dates (open questions 2 and 3 in the spec).

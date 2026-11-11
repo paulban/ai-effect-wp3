@@ -3,9 +3,9 @@
     "name": "Dutch Node Human-AI Interaction Testing",
     "service_mapping": {
       "human_ai_interaction_testing": {
-        "ip_address": "hai-testing-service",
+        "ip_address": "hai-session-runner",
         "port": 8080,
-        "operations": ["StartHumanAISession"],
+        "operations": ["RunHAISession"],
         "image": "ghcr.io/ai-effect/dutch-node-hai-testing:latest"
       }
     },

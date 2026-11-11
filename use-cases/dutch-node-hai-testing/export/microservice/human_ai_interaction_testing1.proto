@@ -1,0 +1,15 @@
+syntax = "proto3";
+package hai_session;
+
+// Describes the service's one operation for the onboarding export only.
+// The service is called over the HTTP control plane (/control/execute) with
+// an inline base64 JSON input, not over gRPC. See the service README.
+service DutchNodeHAISession {
+  rpc RunHAISession(RunHAISessionRequest) returns (RunHAISessionResponse);
+}
+
+message RunHAISessionRequest {
+}
+
+message RunHAISessionResponse {
+}
