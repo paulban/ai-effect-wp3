@@ -8,8 +8,9 @@
 # calling or copying it, against the unmodified submodule:
 #
 #   1. start the backend from config/dev/cab-standalone, with cab_recommendation's
-#      agent pointed at hai-session-runner (RL_AGENT_API_URL). Images are built
-#      from the submodule's source only when missing (or with --rebuild);
+#      agent pointed at hai-session-runner (RL_AGENT_API_URL) and Keycloak moved
+#      to KC_PORT by keycloak.override.yml. Images are built from the
+#      submodule's source only when missing (or with --rebuild);
 #   2. set the Keycloak realm's Frontend URL, restart the frontend, wait for auth;
 #   3. load the OperatorFabric resources (resources/loadTestConf.sh);
 #   4. start the PowerGrid simulator with simulator.override.yml, which mounts
@@ -45,6 +46,10 @@
 #   HAI_AGENT_TOKEN          Bearer token cab_recommendation sends to the agent
 #                            endpoint; must match hai-session-runner's. Unset = open.
 #   KC_ADMIN / KC_PW         Keycloak admin (admin / admin).
+#   KC_PORT                  Keycloak host port (16201; upstream publishes it on 89).
+#   KC_BIND                  Address that port is published on (127.0.0.1). Set
+#                            0.0.0.0 to open the admin console to other machines;
+#                            otherwise tunnel: ssh -L 16201:localhost:16201 <server>.
 
 set -euo pipefail
 
@@ -58,6 +63,7 @@ RESOURCES_DIR="$INTERACTIVEAI_DIR/resources"
 SIMULATOR_DIR="$INTERACTIVEAI_DIR/usecases_examples/PowerGrid"
 SIMULATOR_COMPOSE="$SIMULATOR_DIR/docker-compose.local.yml"   # the local config, port 5122
 SIMULATOR_OVERRIDE="$USE_CASE_DIR/simulator.override.yml"
+KEYCLOAK_OVERRIDE="$USE_CASE_DIR/keycloak.override.yml"
 
 RUNTIME_DIR="$USE_CASE_DIR/runtime"
 SIMULATOR_CONFIG="$RUNTIME_DIR/simulator/CONFIG.toml"
@@ -74,7 +80,9 @@ HAI_AGENT_NAME="HAI algorithm"
 
 FRONTEND_URL="${HAI_FRONTEND_PUBLIC_URL:-http://localhost:3200}"
 SIMULATOR_URL="http://localhost:5122"
-KC_BASE="http://localhost:89/auth"      # Keycloak 16.x, legacy /auth base path
+KC_PORT="${KC_PORT:-16201}"             # keycloak.override.yml publishes Keycloak here
+KC_BIND="${KC_BIND:-127.0.0.1}"
+KC_BASE="http://localhost:$KC_PORT/auth" # Keycloak 16.x, legacy /auth base path
 KC_REALM="dev"
 KC_CLIENT="opfab-client"
 KC_ADMIN="${KC_ADMIN:-admin}"
@@ -120,7 +128,7 @@ container_running() { docker ps --format '{{.Names}}' | grep -qx "$1"; }
 
 backend_compose() {
   docker compose --project-directory "$BACKEND_DIR" -f "$BACKEND_DIR/docker-compose.yml" \
-    --env-file "$BACKEND_ENV_FILE" "$@"
+    -f "$KEYCLOAK_OVERRIDE" --env-file "$BACKEND_ENV_FILE" "$@"
 }
 
 simulator_compose() {
@@ -201,6 +209,8 @@ RL_AGENT_3_TIMEOUT=
 VITE_POWERGRID_SIMU=/powergrid-simu
 POWERGRID_SIMU_UPSTREAM=http://host.docker.internal:5122/
 COGNITIVE_TOKEN=$cognitive_token
+KEYCLOAK_HOST_PORT=$KC_PORT
+KEYCLOAK_HOST_BIND=$KC_BIND
 EOF
   ok "wrote $BACKEND_ENV_FILE (agent: $HAI_AGENT_URL)"
   [[ -n "${HAI_AGENT_TOKEN:-}" ]] || warn "HAI_AGENT_TOKEN unset: the agent endpoint is open on the Docker network"
@@ -273,7 +283,7 @@ EOF
 
 setup_authentication() {
   log "Step 2/6 — Configuring Keycloak"
-  wait_for_http "$KC_BASE/realms/master" 200 || die "Keycloak did not come up on :89"
+  wait_for_http "$KC_BASE/realms/master" 200 || die "Keycloak did not come up on :$KC_PORT"
   configure_keycloak || keycloak_manual_fallback
   docker restart frontend >/dev/null && ok "frontend restarted to pick up the Keycloak change"
   wait_for_http "$FRONTEND_URL/" 200 || warn "frontend not answering 200 yet (continuing)"
@@ -387,7 +397,7 @@ main() {
       --rebuild) rebuild_mode="rebuild" ;;
       --clean)   clean_mode="clean" ;;
       --wipe)    clean_mode="wipe" ;;
-      -h|--help) sed -n '3,48p' "${BASH_SOURCE[0]}"; exit 0 ;;
+      -h|--help) sed -n '3,53p' "${BASH_SOURCE[0]}"; exit 0 ;;
       *)         die "unknown argument: $1 (see --help)" ;;
     esac
     shift

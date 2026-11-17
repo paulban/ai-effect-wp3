@@ -1,0 +1,25 @@
+# Compose override for InteractiveAI's Keycloak: moves its host port off 89.
+#
+# Applied on top of the submodule's backend compose file, which stays untouched:
+#
+#   docker compose --project-directory <InteractiveAI>/config/dev/cab-standalone \
+#     -f <InteractiveAI>/config/dev/cab-standalone/docker-compose.yml \
+#     -f keycloak.override.yml \
+#     --env-file runtime/interactiveai.env up -d
+#
+# scripts/setup_interactiveai.sh runs exactly that, and writes KEYCLOAK_HOST_PORT
+# and KEYCLOAK_HOST_BIND into runtime/interactiveai.env from KC_PORT / KC_BIND.
+#
+# Why move it: 89 is a privileged port (< 1024), which rootless Docker cannot
+# bind, and the upstream mapping publishes the admin console (admin / admin)
+# on every interface. Only the setup script talks to this port; the frontend
+# and the other services reach Keycloak as keycloak:8080 on the compose network,
+# and browsers log in through the frontend's /auth/ proxy on :3200.
+#
+# `!override` replaces the base file's port list. Without it Compose appends
+# to the list and 89 would still be bound. Needs Compose v2.24.4 or newer.
+
+services:
+  keycloak:
+    ports: !override
+      - "${KEYCLOAK_HOST_BIND:-127.0.0.1}:${KEYCLOAK_HOST_PORT:-16201}:8080"
