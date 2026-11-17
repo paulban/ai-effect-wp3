@@ -135,6 +135,30 @@ simulator_compose() {
   docker compose -f "$SIMULATOR_COMPOSE" -f "$SIMULATOR_OVERRIDE" "$@"
 }
 
+# Builds the image of every service that has a build section and whose image is
+# not present locally; leaves existing images alone (see the header for why).
+# Needed because those images (cab/*, powergrid-simulator-app) exist on no
+# registry: when one is missing, e.g. after cleanup_interactiveai.sh, `up` tries
+# to pull it first and stops on "pull access denied" instead of building it.
+build_missing_images() {
+  local compose_fn="$1" service image missing=()
+  while read -r service image; do
+    [[ -n "$service" ]] || continue
+    docker image inspect "$image" >/dev/null 2>&1 || missing+=("$service")
+  done < <("$compose_fn" config --format json | "$PYTHON_BIN" -c '
+import json, sys
+config = json.load(sys.stdin)
+for name, service in config["services"].items():
+    if "build" in service:
+        # Compose names an unnamed built image <project>-<service>.
+        print(name, service.get("image") or "%s-%s" % (config["name"], name))')
+  if (( ${#missing[@]} )); then
+    log "Building missing images: ${missing[*]} (cab_recommendation alone downloads several GB)"
+    "$compose_fn" build "${missing[@]}"
+    ok "built ${missing[*]}"
+  fi
+}
+
 # The docker bridge gateway, as docker-compose.sh computes HOST_IP.
 docker_host_ip() {
   if [[ -n "${HOST_IP:-}" ]]; then echo "$HOST_IP"; return; fi
@@ -230,6 +254,7 @@ start_backend() {
   # docker-compose.sh creates this bundle store before starting; so do we.
   mkdir -p "$BACKEND_DIR/businessconfig-storage"
   # Builds only images that do not exist yet (see the header for why).
+  build_missing_images backend_compose
   backend_compose up -d
   ok "backend compose up"
 
@@ -315,6 +340,7 @@ start_simulator() {
   if [[ -n "$rebuild" ]]; then
     simulator_compose up -d --build --force-recreate app
   else
+    build_missing_images simulator_compose
     simulator_compose up -d --force-recreate app
   fi
   ok "simulator started; CONFIG.toml and scenarios mounted"
