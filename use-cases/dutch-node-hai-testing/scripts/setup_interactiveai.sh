@@ -70,6 +70,10 @@ SIMULATOR_CONFIG="$RUNTIME_DIR/simulator/CONFIG.toml"
 SHIPPED_SIMULATOR_CONFIG="$SIMULATOR_DIR/config/CONFIG.toml"
 BACKEND_ENV_FILE="$RUNTIME_DIR/interactiveai.env"
 
+# Mounted into hai-session-runner and the simulator; its contents are gitignored.
+SCENARIOS_DIR="$USE_CASE_DIR/services/human_ai_interaction_testing/scenarios"
+DEFAULT_SCENARIO_ENV="$SIMULATOR_DIR/Ressources/env_ICAPS_input_data_test"
+
 SERVICES_NETWORK="ai-effect-services"
 # Containers that must share the network with hai-session-runner (FR-24).
 NETWORKED_CONTAINERS=(cab_recommendation frontend PowerGrid-simulator-app)
@@ -206,6 +210,22 @@ prepare_runtime_files() {
     ok "created $SIMULATOR_CONFIG from the simulator's shipped config"
   else
     ok "$SIMULATOR_CONFIG exists"
+  fi
+
+  # Scenarios are gitignored, so a fresh checkout has none and every session
+  # request fails with "Available: []". Seed the simulator's own test
+  # environment then; an environment already there is never touched.
+  local env_dir has_environment=""
+  for env_dir in "$SCENARIOS_DIR"/*/; do
+    [[ -d "${env_dir}chronics" ]] && { has_environment="yes"; break; }
+  done
+  if [[ -n "$has_environment" ]]; then
+    ok "scenarios present in $SCENARIOS_DIR"
+  else
+    [[ -d "$DEFAULT_SCENARIO_ENV/chronics" ]] || die "test environment missing: $DEFAULT_SCENARIO_ENV"
+    mkdir -p "$SCENARIOS_DIR"
+    cp -r "$DEFAULT_SCENARIO_ENV" "$SCENARIOS_DIR/"
+    ok "no scenarios found: copied $(basename "$DEFAULT_SCENARIO_ENV") into $SCENARIOS_DIR"
   fi
 
   # The same keys docker-compose.sh writes to its .env, with the agent fixed to
