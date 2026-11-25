@@ -1,0 +1,16 @@
+# Compose override that publishes the PowerGrid simulator on a public port
+# (spec: .claude/specs/hai-public-access-spec.md, FR-04).
+#
+# Applied by scripts/setup_interactiveai.sh, after simulator.override.yml, only
+# when HAI_PUBLIC_HOST is set in .env. The script exports
+# HAI_SIMULATOR_PUBLIC_PORT before calling compose (this stack has no env file).
+#
+# The port is ADDED to the base file's '5122:5000' (no `!override`): the
+# frontend's /powergrid-simu/ proxy reaches the simulator at
+# host.docker.internal:5122, so 5122 must stay. The container side is the
+# simulator's 5000; only the host side is configurable.
+
+services:
+  app:
+    ports:
+      - "0.0.0.0:${HAI_SIMULATOR_PUBLIC_PORT:-8443}:5000"

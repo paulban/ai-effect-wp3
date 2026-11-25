@@ -39,9 +39,14 @@ services:
       # InteractiveAI as this service reaches it, over ai-effect-services.
       - HAI_CAB_INTERNAL_URL=${HAI_CAB_INTERNAL_URL:-http://frontend:80}
       - HAI_SIMULATOR_INTERNAL_URL=${HAI_SIMULATOR_INTERNAL_URL:-http://PowerGrid-simulator-app:5000}
-      # InteractiveAI as the participant's browser reaches it.
-      - HAI_FRONTEND_PUBLIC_URL=${HAI_FRONTEND_PUBLIC_URL:-http://localhost:3200}
-      - HAI_SIMULATOR_PUBLIC_URL=${HAI_SIMULATOR_PUBLIC_URL:-http://localhost:5122}
+      # InteractiveAI and the simulator as the participant's browser reaches
+      # them. Blank = derived in settings.py: http://<HAI_PUBLIC_HOST>:<port>
+      # when the host is set (.env, server only), else localhost:3200 / :5122.
+      - HAI_FRONTEND_PUBLIC_URL=${HAI_FRONTEND_PUBLIC_URL:-}
+      - HAI_SIMULATOR_PUBLIC_URL=${HAI_SIMULATOR_PUBLIC_URL:-}
+      - HAI_PUBLIC_HOST=${HAI_PUBLIC_HOST:-}
+      - HAI_FRONTEND_PUBLIC_PORT=${HAI_FRONTEND_PUBLIC_PORT:-}
+      - HAI_SIMULATOR_PUBLIC_PORT=${HAI_SIMULATOR_PUBLIC_PORT:-}
       # Server the participant picks in the simulator's login, as the
       # simulator container reaches the gateway.
       - HAI_SIMULATOR_CAB_SERVER=${HAI_SIMULATOR_CAB_SERVER:-http://host.docker.internal:3200/}

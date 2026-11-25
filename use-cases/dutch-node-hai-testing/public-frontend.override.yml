@@ -1,0 +1,16 @@
+# Compose override that publishes the InteractiveAI frontend on a public port
+# (spec: .claude/specs/hai-public-access-spec.md, FR-03).
+#
+# Applied by scripts/setup_interactiveai.sh, after keycloak.override.yml, only
+# when HAI_PUBLIC_HOST is set in .env. The script writes HAI_FRONTEND_PUBLIC_PORT
+# into runtime/interactiveai.env, which this file is interpolated from.
+#
+# The port is ADDED to the base file's '3200:80' (no `!override`): the
+# simulator reaches InteractiveAI at host.docker.internal:3200, so 3200 must
+# stay. The container side is nginx's 80; only the host side is configurable.
+# Bound on all interfaces so the TU Delft network reaches it.
+
+services:
+  frontend:
+    ports:
+      - "0.0.0.0:${HAI_FRONTEND_PUBLIC_PORT:-443}:80"

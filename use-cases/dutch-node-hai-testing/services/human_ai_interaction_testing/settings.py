@@ -10,7 +10,8 @@ Nothing here performs I/O beyond reading ``os.environ``, so importing the
 module is safe in tests.
 
 Spec coverage: section 5.8 (environment variables), NFR-04, FR-11, FR-19a,
-FR-20, FR-20a (timing constants)
+FR-20, FR-20a (timing constants); hai-public-access-spec FR-07, FR-08
+(participant links)
 """
 
 from __future__ import annotations
@@ -111,6 +112,20 @@ MAXIMUM_RECORDED_WARNINGS = 50
 # Truncation of str(action) in a recommendation's description (FR-18).
 MAXIMUM_RECOMMENDATION_DESCRIPTION_LENGTH = 2000
 
+# --- Participant links (hai-public-access-spec FR-07) ------------------------
+
+# Where the browser reaches the stack without public access: the host ports
+# the InteractiveAI and simulator compose files publish.
+LOCAL_FRONTEND_PUBLIC_URL = "http://localhost:3200"
+LOCAL_SIMULATOR_PUBLIC_URL = "http://localhost:5122"
+# The ports TU Delft ICT opened to the internal network; used when
+# HAI_PUBLIC_HOST is set and no port is given.
+DEFAULT_FRONTEND_PUBLIC_PORT = 443
+DEFAULT_SIMULATOR_PUBLIC_PORT = 8443
+# Valid TCP port range.
+MINIMUM_PORT = 1
+MAXIMUM_PORT = 65535
+
 
 def _read_text(environ: Mapping[str, str], name: str, default: str) -> str:
     """Return an environment value, or the default when unset or blank."""
@@ -141,6 +156,75 @@ def _read_positive_float(environ: Mapping[str, str], name: str, default: float) 
     if value <= 0:
         raise ValueError(f"{name} must be positive, got {value}")
     return value
+
+
+def _read_port(environ: Mapping[str, str], name: str, default: int) -> int:
+    """
+    Return a TCP port number from the environment (hai-public-access-spec FR-08).
+
+    Args:
+        environ: Mapping to read from.
+        name: Variable name, e.g. ``HAI_FRONTEND_PUBLIC_PORT``.
+        default: Port used when the variable is unset or blank.
+
+    Returns:
+        The port, between ``MINIMUM_PORT`` and ``MAXIMUM_PORT``.
+
+    Raises:
+        ValueError: If the value is set but not an integer in that range.
+    """
+    raw_value = environ.get(name, "").strip()
+    if not raw_value:
+        return default
+    # isascii(): str.isdigit() alone also accepts digits such as "²".
+    if not (raw_value.isascii() and raw_value.isdigit()):
+        raise ValueError(f"{name} must be a port number, got {raw_value!r}")
+    port = int(raw_value)
+    if not MINIMUM_PORT <= port <= MAXIMUM_PORT:
+        raise ValueError(f"{name} must be between {MINIMUM_PORT} and {MAXIMUM_PORT}, got {port}")
+    return port
+
+
+def _read_public_url(
+    environ: Mapping[str, str],
+    url_name: str,
+    port_name: str,
+    default_port: int,
+    local_default: str,
+) -> str:
+    """
+    Return the address a participant's browser uses for one UI (hai-public-access-spec FR-07).
+
+    Precedence: the explicit URL variable; else ``http://<HAI_PUBLIC_HOST>:<port>``
+    when a public host is set; else the localhost address. The setup script
+    applies the same rule to Keycloak's Frontend URL, so the link handed to the
+    participant is the address login works at.
+
+    Args:
+        environ: Mapping to read from.
+        url_name: Explicit URL variable, e.g. ``HAI_FRONTEND_PUBLIC_URL``.
+        port_name: Public port variable, e.g. ``HAI_FRONTEND_PUBLIC_PORT``.
+        default_port: Port when the host is set and ``port_name`` is not.
+        local_default: Address without public access.
+
+    Returns:
+        The URL, without a trailing slash added or removed.
+
+    Raises:
+        ValueError: If a public host is set and the port variable is invalid.
+
+    Example:
+        >>> _read_public_url({"HAI_PUBLIC_HOST": "h"}, "HAI_FRONTEND_PUBLIC_URL",
+        ...                  "HAI_FRONTEND_PUBLIC_PORT", 443, "http://localhost:3200")
+        'http://h:443'
+    """
+    explicit_url = _read_optional_text(environ, url_name)
+    if explicit_url is not None:
+        return explicit_url
+    public_host = _read_optional_text(environ, "HAI_PUBLIC_HOST")
+    if public_host is None:
+        return local_default
+    return f"http://{public_host}:{_read_port(environ, port_name, default_port)}"
 
 
 @dataclass(frozen=True)
@@ -195,7 +279,8 @@ class HAISettings:
             The settings.
 
         Raises:
-            ValueError: If a numeric variable is set to an invalid value.
+            ValueError: If a numeric variable is set to an invalid value, or a
+                public port is invalid while ``HAI_PUBLIC_HOST`` is set.
         """
         environ = os.environ if environ is None else environ
         return cls(
@@ -217,11 +302,19 @@ class HAISettings:
             simulator_internal_url=_read_text(
                 environ, "HAI_SIMULATOR_INTERNAL_URL", "http://PowerGrid-simulator-app:5000"
             ).rstrip("/"),
-            frontend_public_url=_read_text(
-                environ, "HAI_FRONTEND_PUBLIC_URL", "http://localhost:3200"
+            frontend_public_url=_read_public_url(
+                environ,
+                "HAI_FRONTEND_PUBLIC_URL",
+                "HAI_FRONTEND_PUBLIC_PORT",
+                DEFAULT_FRONTEND_PUBLIC_PORT,
+                LOCAL_FRONTEND_PUBLIC_URL,
             ),
-            simulator_public_url=_read_text(
-                environ, "HAI_SIMULATOR_PUBLIC_URL", "http://localhost:5122"
+            simulator_public_url=_read_public_url(
+                environ,
+                "HAI_SIMULATOR_PUBLIC_URL",
+                "HAI_SIMULATOR_PUBLIC_PORT",
+                DEFAULT_SIMULATOR_PUBLIC_PORT,
+                LOCAL_SIMULATOR_PUBLIC_URL,
             ),
             simulator_cab_server=_read_text(
                 environ, "HAI_SIMULATOR_CAB_SERVER", "http://host.docker.internal:3200/"

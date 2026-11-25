@@ -84,6 +84,40 @@ Re-run `setup_interactiveai.sh` after recreating `frontend`,
 `cab_recommendation` or the simulator, because their connection to
 `ai-effect-services` does not survive a recreate.
 
+### Public access (server only)
+
+By default both UIs answer only on the machine itself (`localhost:3200`,
+`localhost:5122`). On the TU Delft server, where ICT opened ports 443 and 8443
+to the internal network, copy `.env.example` to `.env` and set the host:
+
+```bash
+cp .env.example .env    # then uncomment HAI_PUBLIC_HOST=aieffect-dutch01.ewi.tudelft.nl
+scripts/setup_interactiveai.sh
+docker compose up -d --build    # hai-session-runner reads .env for the participant links
+```
+
+Then, from the TU Delft network or VPN:
+
+| UI | URL | Login |
+|---|---|---|
+| InteractiveAI | `http://aieffect-dutch01.ewi.tudelft.nl:443` | `powergrid_user` / `test` |
+| PowerGrid simulator | `http://aieffect-dutch01.ewi.tudelft.nl:8443` | same account, server `http://host.docker.internal:3200/` |
+
+- Plain HTTP: type the full `http://…:443` URL. A browser that tries `https://` fails.
+- The public ports are **added**: 3200 and 5122 stay, because the simulator
+  and the frontend reach each other through them.
+- Keycloak's Frontend URL becomes the public address, so InteractiveAI login
+  no longer works at `http://localhost:3200`.
+- The simulator page loads Socket.IO from `cdn.socket.io`, so the browser
+  needs internet access.
+- `.env` is parsed, not sourced; a variable set in the shell overrides it.
+  `HAI_FRONTEND_PUBLIC_PORT` / `HAI_SIMULATOR_PUBLIC_PORT` change the ports.
+- **To switch it off**, remove or blank `HAI_PUBLIC_HOST`, then re-run the setup
+  script and `docker compose up -d`. That releases 443 and 8443 and restores
+  the localhost login.
+
+Spec: `.claude/specs/hai-public-access-spec.md`.
+
 ## InteractiveAI is used unmodified
 
 The submodule stays at an upstream commit. Everything this use case needs is
@@ -116,7 +150,11 @@ it (spec section 6.3):
 |---|---|
 | `docker-compose.yml` | The `hai-session-runner` service |
 | `simulator.override.yml` | Mounts for InteractiveAI's simulator (CONFIG.toml, scenarios) |
+| `keycloak.override.yml` | Keycloak on `127.0.0.1:16201` instead of `:89` |
+| `public-frontend.override.yml`, `public-simulator.override.yml` | Public ports 443 / 8443, applied only when `.env` sets `HAI_PUBLIC_HOST` |
+| `.env.example` | Server-only public access settings (copy to the git-ignored `.env`) |
 | `scripts/setup_interactiveai.sh` | One-time InteractiveAI setup |
+| `scripts/cleanup_interactiveai.sh` | Removes the stack's containers and images (volumes with `--volumes`) |
 | `submit-workflow.sh` | Runs a session through the orchestrator |
 | `connections.json`, `export/` | Onboarding package (`hai-session-runner`, `RunHAISession`) |
 | `runtime/` | Git-ignored: the shared CONFIG.toml and the backend's env file |

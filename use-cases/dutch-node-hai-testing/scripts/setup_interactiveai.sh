@@ -50,6 +50,15 @@
 #   KC_BIND                  Address that port is published on (127.0.0.1). Set
 #                            0.0.0.0 to open the admin console to other machines;
 #                            otherwise tunnel: ssh -L 16201:localhost:16201 <server>.
+#
+# Public access (server only; spec .claude/specs/hai-public-access-spec.md).
+# Read from the use case's .env (see .env.example) or the shell, which wins:
+#   HAI_PUBLIC_HOST            Hostname participants type. Unset/blank = off.
+#   HAI_FRONTEND_PUBLIC_PORT   InteractiveAI on http://<host>:<port> (443).
+#   HAI_SIMULATOR_PUBLIC_PORT  Simulator on http://<host>:<port> (8443).
+# When on, both ports are published on all interfaces next to 3200 / 5122, and
+# Keycloak's Frontend URL becomes http://<host>:<frontend port>: login then
+# works only there, no longer at http://localhost:3200.
 
 set -euo pipefail
 
@@ -64,6 +73,11 @@ SIMULATOR_DIR="$INTERACTIVEAI_DIR/usecases_examples/PowerGrid"
 SIMULATOR_COMPOSE="$SIMULATOR_DIR/docker-compose.local.yml"   # the local config, port 5122
 SIMULATOR_OVERRIDE="$USE_CASE_DIR/simulator.override.yml"
 KEYCLOAK_OVERRIDE="$USE_CASE_DIR/keycloak.override.yml"
+# Applied only when public access is on (resolve_public_access).
+PUBLIC_FRONTEND_OVERRIDE="$USE_CASE_DIR/public-frontend.override.yml"
+PUBLIC_SIMULATOR_OVERRIDE="$USE_CASE_DIR/public-simulator.override.yml"
+# Server-only public access settings; parsed, never sourced (read_dotenv_value).
+DOTENV_FILE="$USE_CASE_DIR/.env"
 
 RUNTIME_DIR="$USE_CASE_DIR/runtime"
 SIMULATOR_CONFIG="$RUNTIME_DIR/simulator/CONFIG.toml"
@@ -82,8 +96,22 @@ NETWORKED_CONTAINERS=(cab_recommendation frontend PowerGrid-simulator-app)
 HAI_AGENT_URL="http://hai-session-runner:8080/api/v1/recommendation"
 HAI_AGENT_NAME="HAI algorithm"
 
-FRONTEND_URL="${HAI_FRONTEND_PUBLIC_URL:-http://localhost:3200}"
-SIMULATOR_URL="http://localhost:5122"
+# Host ports the base compose files publish. They stay when public access is on:
+# the simulator and the frontend reach each other through them.
+FRONTEND_LOCAL_PORT=3200
+SIMULATOR_LOCAL_PORT=5122
+# The ports TU Delft ICT opened to the internal network.
+DEFAULT_FRONTEND_PUBLIC_PORT=443
+DEFAULT_SIMULATOR_PUBLIC_PORT=8443
+
+# Set by resolve_public_access: the public host (empty = off), its ports and URLs,
+# and FRONTEND_URL, the address browsers (and Keycloak's Frontend URL) use.
+PUBLIC_HOST=""
+FRONTEND_PUBLIC_PORT="$DEFAULT_FRONTEND_PUBLIC_PORT"
+SIMULATOR_PUBLIC_PORT="$DEFAULT_SIMULATOR_PUBLIC_PORT"
+PUBLIC_SIMULATOR_URL=""
+FRONTEND_URL="http://localhost:$FRONTEND_LOCAL_PORT"
+SIMULATOR_URL="http://localhost:$SIMULATOR_LOCAL_PORT"
 KC_PORT="${KC_PORT:-16201}"             # keycloak.override.yml publishes Keycloak here
 KC_BIND="${KC_BIND:-127.0.0.1}"
 KC_BASE="http://localhost:$KC_PORT/auth" # Keycloak 16.x, legacy /auth base path
@@ -130,13 +158,75 @@ wait_for_http() {
 
 container_running() { docker ps --format '{{.Names}}' | grep -qx "$1"; }
 
+# Strip leading and trailing whitespace.
+trim() {
+  local text="$1"
+  text="${text#"${text%%[![:space:]]*}"}"
+  text="${text%"${text##*[![:space:]]}"}"
+  printf '%s' "$text"
+}
+
+# Print the value of one KEY=value line of the use case's .env (FR-05), or
+# nothing. Parsed rather than sourced, so the file cannot run code or set other
+# variables. Skips comments and blank lines, strips whitespace and one pair of
+# surrounding quotes, drops an inline " # comment" from unquoted values, and,
+# as Compose does, lets the last occurrence of a key win.
+read_dotenv_value() {
+  local wanted_key="$1" line key value found=""
+  [[ -f "$DOTENV_FILE" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    [[ "$line" == *=* ]] || continue
+    key="$(trim "${line%%=*}")"
+    [[ "$key" == "$wanted_key" ]] || continue
+    value="$(trim "${line#*=}")"
+    if [[ "$value" =~ ^\"(.*)\"$ || "$value" =~ ^\'(.*)\'$ ]]; then
+      value="${BASH_REMATCH[1]}"
+    else
+      value="$(trim "${value%%[[:space:]]#*}")"
+    fi
+    found="$value"
+  done < "$DOTENV_FILE"
+  printf '%s' "$found"
+}
+
+# Print a setting: the shell's value when the variable is set there (even blank,
+# so `HAI_PUBLIC_HOST= scripts/setup_interactiveai.sh` switches public access
+# off), else the .env value, else the default.
+read_setting() {
+  local name="$1" default="$2" value
+  if [[ -n "${!name+set}" ]]; then
+    value="$(trim "${!name}")"
+  else
+    value="$(read_dotenv_value "$name")"
+  fi
+  printf '%s' "${value:-$default}"
+}
+
+# Exit unless the value is a TCP port number (FR-08).
+validate_port() {
+  local name="$1" value="$2"
+  if ! [[ "$value" =~ ^[0-9]{1,5}$ ]] || (( 10#$value < 1 || 10#$value > 65535 )); then
+    die "$name must be a port number between 1 and 65535, got '$value'"
+  fi
+}
+
 backend_compose() {
+  local override_files=(-f "$KEYCLOAK_OVERRIDE")
+  if [[ -n "$PUBLIC_HOST" ]]; then
+    override_files+=(-f "$PUBLIC_FRONTEND_OVERRIDE")   # FR-03
+  fi
   docker compose --project-directory "$BACKEND_DIR" -f "$BACKEND_DIR/docker-compose.yml" \
-    -f "$KEYCLOAK_OVERRIDE" --env-file "$BACKEND_ENV_FILE" "$@"
+    "${override_files[@]}" --env-file "$BACKEND_ENV_FILE" "$@"
 }
 
 simulator_compose() {
-  docker compose -f "$SIMULATOR_COMPOSE" -f "$SIMULATOR_OVERRIDE" "$@"
+  local override_files=(-f "$SIMULATOR_OVERRIDE")
+  if [[ -n "$PUBLIC_HOST" ]]; then
+    override_files+=(-f "$PUBLIC_SIMULATOR_OVERRIDE")  # FR-04
+  fi
+  docker compose -f "$SIMULATOR_COMPOSE" "${override_files[@]}" "$@"
 }
 
 # Builds the image of every service that has a build section and whose image is
@@ -192,6 +282,64 @@ check_prerequisites() {
   PYTHON_BIN="$(find_python)" || die "A working Python 3 is required (for JSON handling)."
   [[ -f "$BACKEND_DIR/docker-compose.yml" ]] || die "InteractiveAI submodule missing. Run: git submodule update --init --recursive"
   ok "docker, docker compose, curl, $PYTHON_BIN present; submodule checked out"
+}
+
+# Decide whether public access is on and derive its URLs (FR-02, FR-06, FR-08).
+# Sets PUBLIC_HOST, FRONTEND_PUBLIC_PORT, SIMULATOR_PUBLIC_PORT,
+# PUBLIC_SIMULATOR_URL and FRONTEND_URL; exports the two ports for the
+# compose overrides.
+resolve_public_access() {
+  log "Resolving public access (.env)"
+  PUBLIC_HOST="$(read_setting HAI_PUBLIC_HOST "")"
+  FRONTEND_PUBLIC_PORT="$(read_setting HAI_FRONTEND_PUBLIC_PORT "$DEFAULT_FRONTEND_PUBLIC_PORT")"
+  SIMULATOR_PUBLIC_PORT="$(read_setting HAI_SIMULATOR_PUBLIC_PORT "$DEFAULT_SIMULATOR_PUBLIC_PORT")"
+  local public_frontend_url="" reserved_port
+
+  if [[ -n "$PUBLIC_HOST" ]]; then
+    validate_port HAI_FRONTEND_PUBLIC_PORT "$FRONTEND_PUBLIC_PORT"
+    validate_port HAI_SIMULATOR_PUBLIC_PORT "$SIMULATOR_PUBLIC_PORT"
+    [[ "$FRONTEND_PUBLIC_PORT" != "$SIMULATOR_PUBLIC_PORT" ]] \
+      || die "HAI_FRONTEND_PUBLIC_PORT and HAI_SIMULATOR_PUBLIC_PORT are both $FRONTEND_PUBLIC_PORT"
+    for reserved_port in "$FRONTEND_LOCAL_PORT" "$SIMULATOR_LOCAL_PORT" "$KC_PORT"; do
+      [[ "$FRONTEND_PUBLIC_PORT" != "$reserved_port" ]] \
+        || die "HAI_FRONTEND_PUBLIC_PORT=$FRONTEND_PUBLIC_PORT is already used by the stack"
+      [[ "$SIMULATOR_PUBLIC_PORT" != "$reserved_port" ]] \
+        || die "HAI_SIMULATOR_PUBLIC_PORT=$SIMULATOR_PUBLIC_PORT is already used by the stack"
+    done
+    public_frontend_url="http://$PUBLIC_HOST:$FRONTEND_PUBLIC_PORT"
+    PUBLIC_SIMULATOR_URL="http://$PUBLIC_HOST:$SIMULATOR_PUBLIC_PORT"
+    ok "public access on: InteractiveAI $public_frontend_url, simulator $PUBLIC_SIMULATOR_URL"
+  else
+    PUBLIC_SIMULATOR_URL=""
+    ok "public access off (no HAI_PUBLIC_HOST): localhost only"
+  fi
+
+  # FR-06 precedence: explicit URL > derived public URL > localhost.
+  FRONTEND_URL="$(read_setting HAI_FRONTEND_PUBLIC_URL "${public_frontend_url:-http://localhost:$FRONTEND_LOCAL_PORT}")"
+  export HAI_FRONTEND_PUBLIC_PORT="$FRONTEND_PUBLIC_PORT" HAI_SIMULATOR_PUBLIC_PORT="$SIMULATOR_PUBLIC_PORT"
+}
+
+# Exit if a public port is held by something other than the stack's own
+# container from an earlier run (FR-09). Needs `ss`; skipped with a warning
+# without it (e.g. Git Bash on Windows).
+check_public_port() {
+  local port="$1" owner="$2" publishers
+  if ! command -v ss >/dev/null 2>&1; then
+    warn "'ss' not available: cannot check that port $port is free"
+    return 0
+  fi
+  [[ -n "$(ss -Hltn "sport = :$port" 2>/dev/null)" ]] || return 0
+  publishers="$(docker ps --filter "publish=$port" --format '{{.Names}}')"
+  [[ "$publishers" == "$owner" ]] && return 0
+  die "port $port is already in use${publishers:+ by container(s): ${publishers//$'\n'/, }}. Free it or set another port in .env"
+}
+
+check_public_ports() {
+  [[ -n "$PUBLIC_HOST" ]] || return 0
+  log "Checking public ports $FRONTEND_PUBLIC_PORT and $SIMULATOR_PUBLIC_PORT"
+  check_public_port "$FRONTEND_PUBLIC_PORT" frontend
+  check_public_port "$SIMULATOR_PUBLIC_PORT" PowerGrid-simulator-app
+  ok "public ports free or held by this stack"
 }
 
 prepare_runtime_files() {
@@ -255,6 +403,7 @@ POWERGRID_SIMU_UPSTREAM=http://host.docker.internal:5122/
 COGNITIVE_TOKEN=$cognitive_token
 KEYCLOAK_HOST_PORT=$KC_PORT
 KEYCLOAK_HOST_BIND=$KC_BIND
+HAI_FRONTEND_PUBLIC_PORT=$FRONTEND_PUBLIC_PORT
 EOF
   ok "wrote $BACKEND_ENV_FILE (agent: $HAI_AGENT_URL)"
   [[ -n "${HAI_AGENT_TOKEN:-}" ]] || warn "HAI_AGENT_TOKEN unset: the agent endpoint is open on the Docker network"
@@ -418,6 +567,15 @@ urllib.request.urlopen('http://hai-session-runner:8080/api/v1/health', timeout=5
   else
     warn "simulator not answering on $SIMULATOR_URL"
   fi
+
+  # FR-10: the public frontend URL is already exercised by step 2 (login).
+  if [[ -n "$PUBLIC_HOST" ]]; then
+    if wait_for_http "$PUBLIC_SIMULATOR_URL/" 200 15 >/dev/null; then
+      ok "simulator answers on $PUBLIC_SIMULATOR_URL"
+    else
+      warn "simulator not answering on $PUBLIC_SIMULATOR_URL (does $PUBLIC_HOST resolve to this server?)"
+    fi
+  fi
 }
 
 print_summary() {
@@ -428,6 +586,13 @@ print_summary() {
   printf '  PowerGrid simulator  %s   (%s / %s, server http://host.docker.internal:3200/)\n' \
     "$SIMULATOR_URL" "$TEST_ACCOUNT" "$TEST_PASSWORD"
   printf '  Keycloak admin       %s/admin   (%s / %s)\n' "$KC_BASE" "$KC_ADMIN" "$KC_PW"
+  if [[ -n "$PUBLIC_HOST" ]]; then   # FR-11
+    printf '\n  Public access (plain HTTP, TU Delft network or VPN only):\n'
+    printf '    InteractiveAI        %s\n' "$FRONTEND_URL"
+    printf '    PowerGrid simulator  %s\n' "$PUBLIC_SIMULATOR_URL"
+    printf '  InteractiveAI login now works only at %s, not at localhost:%s.\n' \
+      "$FRONTEND_URL" "$FRONTEND_LOCAL_PORT"
+  fi
   printf '\n  Record the InteractiveAI version in session results:\n'
   printf '    export HAI_INTERACTIVEAI_COMMIT=%s\n' "$commit"
   printf '  Then start the session service:\n'
@@ -443,18 +608,20 @@ main() {
       --rebuild) rebuild_mode="rebuild" ;;
       --clean)   clean_mode="clean" ;;
       --wipe)    clean_mode="wipe" ;;
-      -h|--help) sed -n '3,53p' "${BASH_SOURCE[0]}"; exit 0 ;;
+      -h|--help) sed -n '3,61p' "${BASH_SOURCE[0]}"; exit 0 ;;
       *)         die "unknown argument: $1 (see --help)" ;;
     esac
     shift
   done
 
   check_prerequisites
+  resolve_public_access
   prepare_runtime_files
   case "$clean_mode" in
     clean) teardown "" ;;
     wipe)  teardown "-v" ;;
   esac
+  check_public_ports
   start_backend "$rebuild_mode"
   setup_authentication
   load_resources

@@ -13,6 +13,9 @@ htmlcov/
 venv/
 env/
 
+# Server-only public access settings; .env.example documents them.
+.env
+
 # NOTE: export/ is tracked, matching the other nodes.
 
 # Simulator CONFIG.toml shared with the InteractiveAI simulator; created by
